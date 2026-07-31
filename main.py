@@ -95,6 +95,22 @@ def mucdo_sau_dieu_chinh(score: float, yeu_to_nang_bac: Optional[list]) -> str:
     return base
 
 
+def compute_gpb_status(data: dict):
+    """Khớp đúng logic gpbStatus() bên frontend: None | {'type':'waiting','days':N} | {'type':'done'}"""
+    if not data or data.get("gpbCo") != "Có":
+        return None
+    if data.get("gpbKetQua") and str(data["gpbKetQua"]).strip():
+        return {"type": "done"}
+    if data.get("gpbNgayThucHien"):
+        try:
+            ngay = date.fromisoformat(str(data["gpbNgayThucHien"])[:10])
+            days = max(0, (date.today() - ngay).days)
+            return {"type": "waiting", "days": days}
+        except ValueError:
+            return None
+    return None
+
+
 # ---------- kiểm tra "đã điền": mỗi mục phải có ít nhất 1 trường có giá trị (khớp logic frontend) ----------
 def is_filled(v) -> bool:
     if v is None:
@@ -344,16 +360,40 @@ def dashboard_today(session: Session = Depends(get_session), doctor: Doctor = De
             "loai": "Bệnh án mới", "ma_luu_tru": c.ma_luu_tru, "ma_bn": c.ma_bn, "benh": "AA",
             "ho_ten": p.ho_ten if p else None, "da_dien_du_lieu": c.da_dien_du_lieu,
             "bac_si_tao": c.bac_si_tao, "followup_id": None, "dieu_tri": d.get("dieuTri", ""),
+            "gpb_co": d.get("gpbCo"), "gpb_ngay_thuc_hien": d.get("gpbNgayThucHien"), "gpb_ket_qua": d.get("gpbKetQua"),
         })
     for f in followups:
         c = session.get(AACase, f.case_id)
         p = session.get(Patient, c.ma_bn) if c else None
+        fd = json.loads(f.data)
         out.append({
             "loai": "Tái khám", "ma_luu_tru": c.ma_luu_tru if c else None, "ma_bn": c.ma_bn if c else None, "benh": "AA",
             "ho_ten": p.ho_ten if p else None, "da_dien_du_lieu": f.da_dien_du_lieu,
             "bac_si_tao": f.bac_si_tao, "followup_id": f.id, "dieu_tri": f.dieu_tri or "",
+            "gpb_co": fd.get("gpbCo"), "gpb_ngay_thuc_hien": fd.get("gpbNgayThucHien"), "gpb_ket_qua": fd.get("gpbKetQua"),
         })
     return {"ngay": today.isoformat(), "tong_so": len(out), "danh_sach": out}
+
+
+@app.get("/gpb/waitlist")
+def gpb_waitlist(session: Session = Depends(get_session), doctor: Doctor = Depends(get_current_doctor)):
+    """Danh sách chờ giải phẫu bệnh — quét toàn bộ bệnh nhân (không chỉ hôm nay), mở cho mọi tài khoản đăng nhập."""
+    out = []
+    for c in session.exec(select(AACase)).all():
+        d = json.loads(c.benh_an_moi)
+        st = compute_gpb_status(d)
+        if st and st["type"] == "waiting":
+            p = session.get(Patient, c.ma_bn)
+            out.append({"loai": "Bệnh án mới", "ma_bn": c.ma_bn, "ho_ten": p.ho_ten if p else None, "ma_luu_tru": c.ma_luu_tru, "days": st["days"], "followup_id": None})
+        followups = session.exec(select(AAFollowUp).where(AAFollowUp.case_id == c.id).order_by(AAFollowUp.ngay_kham)).all()
+        for i, f in enumerate(followups):
+            fd = json.loads(f.data)
+            st = compute_gpb_status(fd)
+            if st and st["type"] == "waiting":
+                p = session.get(Patient, c.ma_bn)
+                out.append({"loai": f"Tái khám {i + 1}", "ma_bn": c.ma_bn, "ho_ten": p.ho_ten if p else None, "ma_luu_tru": c.ma_luu_tru, "days": st["days"], "followup_id": f.id})
+    out.sort(key=lambda r: -r["days"])
+    return out
 
 
 def get_json_path(json_str: str, path: str):
@@ -398,18 +438,22 @@ def search_cases(
             so_luot_tk = len(followups)
             if so_luot_tk < so_luot_tai_kham_it_nhat:
                 continue
+            d0 = json.loads(c.benh_an_moi)
             results.append({
                 "loai": "Bệnh án mới", "ma_luu_tru": c.ma_luu_tru, "ma_bn": c.ma_bn,
                 "ho_ten": p.ho_ten if p else None, "ngay": c.ngay_tao.isoformat() if c.ngay_tao else None,
                 "muc_do_nang": c.muc_do_nang, "da_dien_du_lieu": c.da_dien_du_lieu, "followup_id": None,
                 "so_luot_tai_kham": so_luot_tk,
+                "gpb_co": d0.get("gpbCo"), "gpb_ngay_thuc_hien": d0.get("gpbNgayThucHien"), "gpb_ket_qua": d0.get("gpbKetQua"),
             })
             for i, f in enumerate(followups):
+                fd = json.loads(f.data)
                 results.append({
                     "loai": f"Tái khám {i + 1}", "ma_luu_tru": c.ma_luu_tru, "ma_bn": c.ma_bn,
                     "ho_ten": p.ho_ten if p else None, "ngay": f.ngay_kham.isoformat() if f.ngay_kham else None,
                     "muc_do_nang": f.muc_do_nang, "da_dien_du_lieu": f.da_dien_du_lieu, "followup_id": f.id,
                     "so_luot_tai_kham": so_luot_tk,
+                    "gpb_co": fd.get("gpbCo"), "gpb_ngay_thuc_hien": fd.get("gpbNgayThucHien"), "gpb_ket_qua": fd.get("gpbKetQua"),
                 })
         results.sort(key=lambda r: (r["ma_bn"] or "", r["ngay"] or ""))
         return {"tong_so": len(results), "ket_qua": results}
@@ -431,10 +475,12 @@ def search_cases(
             continue
         if xet_nghiem_co and not get_json_path(c.benh_an_moi, xet_nghiem_co):
             continue
+        d0 = json.loads(c.benh_an_moi)
         results.append({
             "loai": "Bệnh án mới", "ma_luu_tru": c.ma_luu_tru, "ma_bn": c.ma_bn,
             "ho_ten": p.ho_ten if p else None, "ngay": c.ngay_tao.isoformat() if c.ngay_tao else None,
             "muc_do_nang": c.muc_do_nang, "da_dien_du_lieu": c.da_dien_du_lieu, "followup_id": None,
+            "gpb_co": d0.get("gpbCo"), "gpb_ngay_thuc_hien": d0.get("gpbNgayThucHien"), "gpb_ket_qua": d0.get("gpbKetQua"),
         })
 
     q2 = select(AAFollowUp)
@@ -455,10 +501,12 @@ def search_cases(
         p = session.get(Patient, c.ma_bn) if c else None
         if ten_bn and ten_bn.lower() not in ((p.ho_ten if p else "") or "").lower():
             continue
+        fd = json.loads(f.data)
         results.append({
             "loai": "Tái khám", "ma_luu_tru": c.ma_luu_tru if c else None, "ma_bn": c.ma_bn if c else None,
             "ho_ten": p.ho_ten if p else None, "ngay": f.ngay_kham.isoformat() if f.ngay_kham else None,
             "muc_do_nang": f.muc_do_nang, "da_dien_du_lieu": f.da_dien_du_lieu, "followup_id": f.id,
+            "gpb_co": fd.get("gpbCo"), "gpb_ngay_thuc_hien": fd.get("gpbNgayThucHien"), "gpb_ket_qua": fd.get("gpbKetQua"),
         })
 
     results.sort(key=lambda r: r["ngay"] or "", reverse=True)
