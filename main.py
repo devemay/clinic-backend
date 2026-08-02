@@ -12,7 +12,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from auth import authenticate_doctor, create_access_token, get_current_doctor, require_export_permission, require_create_permission
+from auth import authenticate_doctor, create_access_token, get_current_doctor, require_export_permission, require_create_permission, require_admin, hash_password, verify_password
 from database import get_session, init_db
 from models import AACase, AAFollowUp, Doctor, Patient
 from storage import get_storage, refresh_url
@@ -40,6 +40,7 @@ class Token(BaseModel):
     role: str
     can_create: bool
     can_export: bool
+    is_admin: bool
 
 
 class PatientIn(BaseModel):
@@ -199,12 +200,126 @@ def login(form: OAuth2PasswordRequestForm = Depends(), session: Session = Depend
     if not doctor:
         raise HTTPException(status_code=401, detail="Sai tên đăng nhập hoặc mật khẩu")
     token = create_access_token(doctor.username)
-    return Token(access_token=token, display_name=doctor.display_name, role=doctor.role, can_create=doctor.can_create, can_export=doctor.can_export)
+    return Token(access_token=token, display_name=doctor.display_name, role=doctor.role, can_create=doctor.can_create, can_export=doctor.can_export, is_admin=doctor.is_admin)
 
 
 @app.get("/auth/me")
 def me(doctor: Doctor = Depends(get_current_doctor)):
-    return {"username": doctor.username, "display_name": doctor.display_name, "role": doctor.role, "can_create": doctor.can_create, "can_export": doctor.can_export}
+    return {"username": doctor.username, "display_name": doctor.display_name, "role": doctor.role, "can_create": doctor.can_create, "can_export": doctor.can_export, "is_admin": doctor.is_admin}
+
+
+class ChangePasswordIn(BaseModel):
+    old_password: str
+    new_password: str
+
+
+@app.post("/auth/change-password")
+def change_password(
+    payload: ChangePasswordIn,
+    session: Session = Depends(get_session),
+    doctor: Doctor = Depends(get_current_doctor),
+):
+    if not verify_password(payload.old_password, doctor.hashed_password):
+        raise HTTPException(status_code=400, detail="Mật khẩu hiện tại không đúng")
+    if len(payload.new_password) < 6:
+        raise HTTPException(status_code=400, detail="Mật khẩu mới phải có ít nhất 6 ký tự")
+    doctor.hashed_password = hash_password(payload.new_password)
+    session.add(doctor)
+    session.commit()
+    return {"ok": True}
+
+
+# ---------- quản lý tài khoản (chỉ admin) ----------
+class DoctorCreateIn(BaseModel):
+    username: str
+    display_name: str
+    password: str
+    role: str = "hoc_vien"  # chỉ để hiển thị, không quyết định quyền
+    can_create: bool = False
+    can_export: bool = False
+    is_admin: bool = False
+
+
+class DoctorPermissionsIn(BaseModel):
+    display_name: Optional[str] = None
+    role: Optional[str] = None
+    can_create: Optional[bool] = None
+    can_export: Optional[bool] = None
+    is_admin: Optional[bool] = None
+
+
+class ResetPasswordIn(BaseModel):
+    new_password: str
+
+
+def doctor_public(d: Doctor) -> dict:
+    return {
+        "username": d.username, "display_name": d.display_name, "role": d.role,
+        "can_create": d.can_create, "can_export": d.can_export, "is_admin": d.is_admin,
+    }
+
+
+@app.get("/admin/doctors")
+def list_doctors(session: Session = Depends(get_session), admin: Doctor = Depends(require_admin)):
+    doctors = session.exec(select(Doctor).order_by(Doctor.username)).all()
+    return [doctor_public(d) for d in doctors]
+
+
+@app.post("/admin/doctors")
+def create_doctor(payload: DoctorCreateIn, session: Session = Depends(get_session), admin: Doctor = Depends(require_admin)):
+    if session.get(Doctor, payload.username):
+        raise HTTPException(status_code=400, detail="Tên đăng nhập đã tồn tại")
+    if len(payload.password) < 6:
+        raise HTTPException(status_code=400, detail="Mật khẩu phải có ít nhất 6 ký tự")
+    d = Doctor(
+        username=payload.username, display_name=payload.display_name,
+        hashed_password=hash_password(payload.password), role=payload.role,
+        can_create=payload.can_create, can_export=payload.can_export, is_admin=payload.is_admin,
+    )
+    session.add(d)
+    session.commit()
+    return doctor_public(d)
+
+
+@app.put("/admin/doctors/{username}")
+def update_doctor_permissions(username: str, payload: DoctorPermissionsIn, session: Session = Depends(get_session), admin: Doctor = Depends(require_admin)):
+    d = session.get(Doctor, username)
+    if not d:
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài khoản")
+    if username == admin.username and payload.is_admin is False:
+        raise HTTPException(status_code=400, detail="Không thể tự bỏ quyền admin của chính mình")
+    for field in ["display_name", "role", "can_create", "can_export", "is_admin"]:
+        value = getattr(payload, field)
+        if value is not None:
+            setattr(d, field, value)
+    session.add(d)
+    session.commit()
+    return doctor_public(d)
+
+
+@app.post("/admin/doctors/{username}/reset-password")
+def admin_reset_password(username: str, payload: ResetPasswordIn, session: Session = Depends(get_session), admin: Doctor = Depends(require_admin)):
+    d = session.get(Doctor, username)
+    if not d:
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài khoản")
+    if len(payload.new_password) < 6:
+        raise HTTPException(status_code=400, detail="Mật khẩu mới phải có ít nhất 6 ký tự")
+    d.hashed_password = hash_password(payload.new_password)
+    session.add(d)
+    session.commit()
+    return {"ok": True}
+
+
+@app.delete("/admin/doctors/{username}")
+def delete_doctor(username: str, session: Session = Depends(get_session), admin: Doctor = Depends(require_admin)):
+    if username == admin.username:
+        raise HTTPException(status_code=400, detail="Không thể tự xoá tài khoản của chính mình")
+    d = session.get(Doctor, username)
+    if not d:
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài khoản")
+    session.delete(d)
+    session.commit()
+    return {"ok": True}
 
 
 # ---------- patients ----------

@@ -87,3 +87,12 @@ def require_export_permission(doctor: Doctor = Depends(get_current_doctor)) -> D
             detail="Tài khoản này chưa được cấp quyền xuất dữ liệu",
         )
     return doctor
+
+
+def require_admin(doctor: Doctor = Depends(get_current_doctor)) -> Doctor:
+    if not doctor.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Chỉ tài khoản admin mới được quản lý tài khoản người dùng",
+        )
+    return doctor

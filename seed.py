@@ -24,7 +24,7 @@ RESIDENTS = [
 
 RESEARCH_MANAGERS = [
     ("nghiencuu", "Tài khoản tổng hợp nghiên cứu"),
-]  # can_create=True, can_export=True — quyền đầy đủ
+]  # can_create=True, can_export=True, is_admin=True — quyền đầy đủ + quản lý tài khoản
 
 DEFAULT_PASSWORD = "123456"
 
@@ -53,7 +53,7 @@ if __name__ == "__main__":
             session.add(Doctor(
                 username=username, display_name=display_name,
                 hashed_password=hash_password(DEFAULT_PASSWORD),
-                role="hoc_vien", can_create=True, can_export=True,
+                role="hoc_vien", can_create=True, can_export=True, is_admin=True,
             ))
         session.commit()
 

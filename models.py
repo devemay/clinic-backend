@@ -12,6 +12,7 @@ class Doctor(SQLModel, table=True):
     role: str = Field(default="hoc_vien", max_length=16)
     can_create: bool = Field(default=False)  # được tạo mã lưu trữ mới (bệnh án mới / tái khám mới)
     can_export: bool = Field(default=False)  # được xuất dữ liệu tổng hợp nghiên cứu
+    is_admin: bool = Field(default=False)  # được cấp/sửa/xoá tài khoản người khác
     # Mọi tài khoản đăng nhập được đều mặc định điền/sửa được dữ liệu trong hồ sơ đã có — không cần cờ riêng
 
 

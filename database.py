@@ -1,5 +1,6 @@
 import os
 from sqlmodel import SQLModel, Session, create_engine
+from sqlalchemy import text, inspect
 
 import config
 
@@ -16,8 +17,29 @@ else:
     engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 
 
+# Các cột được thêm vào SAU KHI hệ thống đã có dữ liệu thật — create_all() không tự thêm cột
+# vào bảng đã tồn tại, nên cần tự kiểm tra & ALTER TABLE thủ công tại đây (không đụng dữ liệu cũ).
+NEW_COLUMNS = {
+    "doctor": [("is_admin", "BOOLEAN DEFAULT 0")],
+}
+
+
+def ensure_new_columns():
+    inspector = inspect(engine)
+    with engine.connect() as conn:
+        for table, columns in NEW_COLUMNS.items():
+            if table not in inspector.get_table_names():
+                continue
+            existing = {c["name"] for c in inspector.get_columns(table)}
+            for col_name, col_def in columns:
+                if col_name not in existing:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_def}"))
+                    conn.commit()
+
+
 def init_db():
     SQLModel.metadata.create_all(engine)
+    ensure_new_columns()
 
 
 def get_session():
