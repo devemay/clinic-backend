@@ -476,6 +476,7 @@ def dashboard_today(session: Session = Depends(get_session), doctor: Doctor = De
             "ho_ten": p.ho_ten if p else None, "da_dien_du_lieu": c.da_dien_du_lieu,
             "bac_si_tao": c.bac_si_tao, "followup_id": None, "dieu_tri": d.get("dieuTri", ""),
             "gpb_co": d.get("gpbCo"), "gpb_ngay_thuc_hien": d.get("gpbNgayThucHien"), "gpb_ket_qua": d.get("gpbKetQua"),
+            "has_anh": bool(d.get("anh")),
         })
     for f in followups:
         c = session.get(AACase, f.case_id)
@@ -486,6 +487,7 @@ def dashboard_today(session: Session = Depends(get_session), doctor: Doctor = De
             "ho_ten": p.ho_ten if p else None, "da_dien_du_lieu": f.da_dien_du_lieu,
             "bac_si_tao": f.bac_si_tao, "followup_id": f.id, "dieu_tri": f.dieu_tri or "",
             "gpb_co": fd.get("gpbCo"), "gpb_ngay_thuc_hien": fd.get("gpbNgayThucHien"), "gpb_ket_qua": fd.get("gpbKetQua"),
+            "has_anh": bool(fd.get("anh")),
         })
     return {"ngay": today.isoformat(), "tong_so": len(out), "danh_sach": out}
 
@@ -560,6 +562,7 @@ def search_cases(
                 "muc_do_nang": c.muc_do_nang, "da_dien_du_lieu": c.da_dien_du_lieu, "followup_id": None,
                 "so_luot_tai_kham": so_luot_tk,
                 "gpb_co": d0.get("gpbCo"), "gpb_ngay_thuc_hien": d0.get("gpbNgayThucHien"), "gpb_ket_qua": d0.get("gpbKetQua"),
+                "has_anh": bool(d0.get("anh")),
             })
             for i, f in enumerate(followups):
                 fd = json.loads(f.data)
@@ -569,6 +572,7 @@ def search_cases(
                     "muc_do_nang": f.muc_do_nang, "da_dien_du_lieu": f.da_dien_du_lieu, "followup_id": f.id,
                     "so_luot_tai_kham": so_luot_tk,
                     "gpb_co": fd.get("gpbCo"), "gpb_ngay_thuc_hien": fd.get("gpbNgayThucHien"), "gpb_ket_qua": fd.get("gpbKetQua"),
+            "has_anh": bool(fd.get("anh")),
                 })
         results.sort(key=lambda r: (r["ma_bn"] or "", r["ngay"] or ""))
         return {"tong_so": len(results), "ket_qua": results}
@@ -596,6 +600,7 @@ def search_cases(
             "ho_ten": p.ho_ten if p else None, "ngay": c.ngay_tao.isoformat() if c.ngay_tao else None,
             "muc_do_nang": c.muc_do_nang, "da_dien_du_lieu": c.da_dien_du_lieu, "followup_id": None,
             "gpb_co": d0.get("gpbCo"), "gpb_ngay_thuc_hien": d0.get("gpbNgayThucHien"), "gpb_ket_qua": d0.get("gpbKetQua"),
+                "has_anh": bool(d0.get("anh")),
         })
 
     q2 = select(AAFollowUp)
@@ -622,6 +627,7 @@ def search_cases(
             "ho_ten": p.ho_ten if p else None, "ngay": f.ngay_kham.isoformat() if f.ngay_kham else None,
             "muc_do_nang": f.muc_do_nang, "da_dien_du_lieu": f.da_dien_du_lieu, "followup_id": f.id,
             "gpb_co": fd.get("gpbCo"), "gpb_ngay_thuc_hien": fd.get("gpbNgayThucHien"), "gpb_ket_qua": fd.get("gpbKetQua"),
+            "has_anh": bool(fd.get("anh")),
         })
 
     results.sort(key=lambda r: r["ngay"] or "", reverse=True)
