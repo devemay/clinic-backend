@@ -14,7 +14,7 @@ from sqlmodel import Session, select
 
 from auth import authenticate_doctor, create_access_token, get_current_doctor, require_export_permission, require_create_permission, require_admin, hash_password, verify_password
 from database import get_session, init_db
-from models import AACase, AAFollowUp, Doctor, Patient
+from models import AACase, AAFollowUp, AGACase, AGAFollowUp, Doctor, Patient
 from storage import get_storage, refresh_url
 
 app = FastAPI(title="Bệnh án nghiên cứu — API")
@@ -166,6 +166,25 @@ FOLLOWUP_SECTIONS = {
     "Hình ảnh": ["anh"],
 }
 
+NEW_AGA_CASE_SECTIONS = {
+    "Hành chính": ["ngayKham", "bacSiKham", "luuHuyetTuong", "luuHuyetThanh"],
+    "Bệnh sử - Tiền sử": ["thoiGianKhoiPhat", "benhSuTruoc", "tienSuBanThan", "tienSuGiaDinh"],
+    "Khám thực thể": ["canNang", "chieuCao", "vongBung", "mach", "ha", "dauHieuCuongAndrogen", "phanBoRungToc", "matDoToc", "duongKinhSoiToc", "pullTest"],
+    "Thang điểm": ["hamiltonNorwood", "sinclairScale", "ludwig", "pcos"],
+    "Cận lâm sàng": ["labs", "sieuAmOBung", "sieuAmTuyenGiap", "moBenhHoc", "dermoscopy", "vungTran", "vungDinh", "vungCham", "xnKhac"],
+    "Giải phẫu bệnh": ["gpbCo"],
+    "Điều trị & thủ thuật": ["dieuTri", "henKham"],
+    "Hình ảnh": ["anh"],
+}
+FOLLOWUP_AGA_SECTIONS = {
+    "Lâm sàng": ["ngayKham", "bacSiKham", "lamSang", "pullTest", "mucDoSoVoiTruoc"],
+    "Thang điểm": ["hamiltonNorwood", "sinclairScale"],
+    "Tác dụng phụ & Xét nghiệm": ["tacDungPhuStatus", "xnStatus"],
+    "Giải phẫu bệnh": ["gpbCo"],
+    "Điều trị": ["dieuTri"],
+    "Hình ảnh": ["anh"],
+}
+
 
 def parse_date(value) -> Optional[date]:
     if not value:
@@ -178,11 +197,11 @@ def parse_date(value) -> Optional[date]:
         return None
 
 
-def next_ma_luu_tru(session: Session, disease: str = "AA") -> str:
+def next_ma_luu_tru(session: Session, disease: str, model=AACase) -> str:
     today = date.today()
     prefix = f"{disease}{today.strftime('%y%m%d')}"
     existing = session.exec(
-        select(AACase.ma_luu_tru).where(AACase.ma_luu_tru.like(f"{prefix}%"))
+        select(model.ma_luu_tru).where(model.ma_luu_tru.like(f"{prefix}%"))
     ).all()
     max_seq = 0
     for m in existing:
@@ -327,6 +346,16 @@ def delete_doctor(username: str, session: Session = Depends(get_session), admin:
 def get_patient(ma_bn: str, session: Session = Depends(get_session), doctor: Doctor = Depends(get_current_doctor)):
     p = session.get(Patient, ma_bn)
     if not p:
+        # Mã BN thật thường có số 0 ở đầu (VD 0030053708) nhưng người dùng hay gõ tắt bỏ số 0
+        # (VD 30053708). Nếu không khớp chính xác, thử so khớp với mã đã bỏ số 0 ở đầu của từng
+        # bệnh nhân trong hệ thống.
+        query_stripped = ma_bn.lstrip("0")
+        if query_stripped:
+            for candidate in session.exec(select(Patient)).all():
+                if candidate.ma_bn.lstrip("0") == query_stripped:
+                    p = candidate
+                    break
+    if not p:
         raise HTTPException(status_code=404, detail="Không tìm thấy bệnh nhân")
     return p
 
@@ -343,6 +372,40 @@ def upsert_patient(payload: PatientIn, session: Session = Depends(get_session), 
     session.commit()
     session.refresh(p)
     return p
+
+
+@app.delete("/patients/{ma_bn}")
+def delete_patient(ma_bn: str, session: Session = Depends(get_session), doctor: Doctor = Depends(require_export_permission)):
+    """Xoá toàn bộ hồ sơ của 1 bệnh nhân (bệnh án + mọi lần tái khám + thông tin bệnh nhân) —
+    dùng để dọn dữ liệu demo/test, không thể hoàn tác. Chỉ tài khoản quyền đầy đủ mới xoá được."""
+    p = session.get(Patient, ma_bn)
+    if not p:
+        raise HTTPException(status_code=404, detail="Không tìm thấy bệnh nhân")
+    case = session.exec(select(AACase).where(AACase.ma_bn == ma_bn)).first()
+    if case:
+        for f in session.exec(select(AAFollowUp).where(AAFollowUp.case_id == case.id)).all():
+            session.delete(f)
+        session.delete(case)
+    session.delete(p)
+    session.commit()
+    return {"ok": True}
+
+
+@app.delete("/patients/{ma_bn}")
+def delete_patient(ma_bn: str, session: Session = Depends(get_session), doctor: Doctor = Depends(require_export_permission)):
+    """Xoá toàn bộ hồ sơ của 1 bệnh nhân (bệnh án + mọi lần tái khám + thông tin bệnh nhân) —
+    dùng để dọn dữ liệu demo/test, không thể hoàn tác. Chỉ tài khoản quyền đầy đủ mới xoá được."""
+    p = session.get(Patient, ma_bn)
+    if not p:
+        raise HTTPException(status_code=404, detail="Không tìm thấy bệnh nhân")
+    case = session.exec(select(AACase).where(AACase.ma_bn == ma_bn)).first()
+    if case:
+        for f in session.exec(select(AAFollowUp).where(AAFollowUp.case_id == case.id)).all():
+            session.delete(f)
+        session.delete(case)
+    session.delete(p)
+    session.commit()
+    return {"ok": True}
 
 
 # ---------- AA case: tạo mã lưu trữ (chỉ bác sĩ) ----------
@@ -454,6 +517,113 @@ def save_followup_data(
     case = session.get(AACase, fu.case_id)
     salt_now = calc_salt(payload.data.get("vung", {}))
     fu.muc_do_nang = mucdo_sau_dieu_chinh(salt_now, payload.data.get("yeuToNangBac"))
+    fu.dieu_tri = (payload.data.get("dieuTri") or "")[:255]
+    session.add(fu)
+    session.commit()
+    return {"ok": True}
+
+
+# ---------- AGA case: tạo mã lưu trữ (chỉ bác sĩ) ----------
+@app.post("/cases/{ma_bn}/aga/create")
+def create_aga_case(
+    ma_bn: str,
+    payload: CreateCaseIn,
+    session: Session = Depends(get_session),
+    doctor: Doctor = Depends(require_create_permission),
+):
+    if not session.get(Patient, ma_bn):
+        raise HTTPException(status_code=404, detail="Bệnh nhân chưa tồn tại — tạo bệnh nhân trước")
+    existing = session.exec(select(AGACase).where(AGACase.ma_bn == ma_bn)).first()
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Bệnh nhân đã có mã lưu trữ AGA: {existing.ma_luu_tru}")
+    ma_luu_tru = next_ma_luu_tru(session, "AGA", AGACase)
+    case = AGACase(
+        ma_luu_tru=ma_luu_tru,
+        ma_bn=ma_bn,
+        bac_si_tao=doctor.display_name,
+        benh_an_moi=json.dumps({"ngayKham": payload.ngay_kham or date.today().isoformat()}, ensure_ascii=False),
+        da_dien_du_lieu=False,
+    )
+    session.add(case)
+    session.commit()
+    session.refresh(case)
+    return {"ok": True, "case_id": case.id, "ma_luu_tru": case.ma_luu_tru}
+
+
+@app.get("/cases/{ma_bn}/aga")
+def get_aga_case(ma_bn: str, session: Session = Depends(get_session), doctor: Doctor = Depends(get_current_doctor)):
+    case = session.exec(select(AGACase).where(AGACase.ma_bn == ma_bn)).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Bệnh nhân chưa có bệnh án AGA")
+    followups = session.exec(
+        select(AGAFollowUp).where(AGAFollowUp.case_id == case.id).order_by(AGAFollowUp.ngay_kham)
+    ).all()
+    return {
+        "ma_luu_tru": case.ma_luu_tru,
+        "da_dien_du_lieu": case.da_dien_du_lieu,
+        "bac_si_tao": case.bac_si_tao,
+        "benh_an_moi": refresh_images(json.loads(case.benh_an_moi)),
+        "tai_khams": [
+            {"id": f.id, "ngay_kham": f.ngay_kham, "da_dien_du_lieu": f.da_dien_du_lieu, "bac_si_tao": f.bac_si_tao, **refresh_images(json.loads(f.data))}
+            for f in followups
+        ],
+        "updated_at": case.updated_at,
+    }
+
+
+@app.put("/cases/{ma_bn}/aga")
+def save_aga_case_data(
+    ma_bn: str, payload: DataIn, session: Session = Depends(get_session), doctor: Doctor = Depends(get_current_doctor)
+):
+    case = session.exec(select(AGACase).where(AGACase.ma_bn == ma_bn)).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Chưa có mã lưu trữ — bác sĩ cần tạo bệnh án trước")
+    case.benh_an_moi = json.dumps(payload.data, ensure_ascii=False)
+    case.da_dien_du_lieu = all_sections_filled(payload.data, NEW_AGA_CASE_SECTIONS)
+    case.updated_at = datetime.utcnow()
+    session.add(case)
+    session.commit()
+    return {"ok": True, "ma_luu_tru": case.ma_luu_tru}
+
+
+@app.post("/cases/{ma_bn}/aga/followups/create")
+def create_aga_followup(
+    ma_bn: str,
+    payload: CreateFollowUpIn,
+    session: Session = Depends(get_session),
+    doctor: Doctor = Depends(require_create_permission),
+):
+    case = session.exec(select(AGACase).where(AGACase.ma_bn == ma_bn)).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Bệnh nhân chưa có mã lưu trữ AGA")
+    ngay = payload.ngay_kham or date.today().isoformat()
+    fu = AGAFollowUp(
+        case_id=case.id,
+        ngay_kham=parse_date(ngay),
+        bac_si_tao=doctor.display_name,
+        data=json.dumps({"ngayKham": ngay}, ensure_ascii=False),
+        da_dien_du_lieu=False,
+    )
+    session.add(fu)
+    session.commit()
+    session.refresh(fu)
+    return {"ok": True, "followup_id": fu.id, "ma_luu_tru": case.ma_luu_tru}
+
+
+@app.put("/cases/{ma_bn}/aga/followups/{followup_id}")
+def save_aga_followup_data(
+    ma_bn: str,
+    followup_id: int,
+    payload: DataIn,
+    session: Session = Depends(get_session),
+    doctor: Doctor = Depends(get_current_doctor),
+):
+    fu = session.get(AGAFollowUp, followup_id)
+    if not fu:
+        raise HTTPException(status_code=404, detail="Không tìm thấy lần tái khám")
+    fu.data = json.dumps(payload.data, ensure_ascii=False)
+    fu.ngay_kham = parse_date(payload.data.get("ngayKham")) or fu.ngay_kham
+    fu.da_dien_du_lieu = all_sections_filled(payload.data, FOLLOWUP_AGA_SECTIONS)
     fu.dieu_tri = (payload.data.get("dieuTri") or "")[:255]
     session.add(fu)
     session.commit()

@@ -48,7 +48,14 @@ if __name__ == "__main__":
                 role="hoc_vien", can_create=False, can_export=False,
             ))
         for username, display_name in RESEARCH_MANAGERS:
-            if session.get(Doctor, username):
+            existing = session.get(Doctor, username)
+            if existing:
+                # Tài khoản đã tồn tại (VD tạo trước khi có quyền admin) — cập nhật lại quyền cho đúng,
+                # không bỏ qua như 2 nhóm trên, để chạy lại seed.py là tự khắc phục được.
+                existing.can_create = True
+                existing.can_export = True
+                existing.is_admin = True
+                session.add(existing)
                 continue
             session.add(Doctor(
                 username=username, display_name=display_name,
