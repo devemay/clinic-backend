@@ -64,8 +64,12 @@ _S3_URL_RE = None
 def _s3_url_pattern():
     global _S3_URL_RE
     if _S3_URL_RE is None and config.USE_S3:
+        # Lưu ý: boto3 mặc định tạo URL dạng "bucket.s3.amazonaws.com" (KHÔNG có tên vùng trong
+        # tên miền), khác với địa chỉ endpoint dịch vụ "s3.<vùng>.amazonaws.com". Regex trước đây
+        # bắt buộc phải có tên vùng nên không khớp URL thật, khiến hàm làm mới không hoạt động —
+        # để phần "vùng" thành tuỳ chọn để khớp đúng cả 2 dạng URL boto3 có thể tạo ra.
         _S3_URL_RE = re.compile(
-            rf"^https://{re.escape(config.S3_BUCKET)}\.s3\.{re.escape(config.AWS_REGION)}\.amazonaws\.com/([^?]+)"
+            rf"^https://{re.escape(config.S3_BUCKET)}\.s3(?:[.-]{re.escape(config.AWS_REGION)})?\.amazonaws\.com/([^?]+)"
         )
     return _S3_URL_RE
 
