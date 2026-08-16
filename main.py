@@ -403,34 +403,55 @@ def upsert_patient(payload: PatientIn, session: Session = Depends(get_session), 
 
 @app.delete("/patients/{ma_bn}")
 def delete_patient(ma_bn: str, session: Session = Depends(get_session), doctor: Doctor = Depends(require_export_permission)):
-    """Xoá toàn bộ hồ sơ của 1 bệnh nhân (bệnh án + mọi lần tái khám + thông tin bệnh nhân) —
+    """Xoá toàn bộ hồ sơ của 1 bệnh nhân (bệnh án + mọi lần tái khám của cả 3 bệnh + thông tin bệnh nhân) —
     dùng để dọn dữ liệu demo/test, không thể hoàn tác. Chỉ tài khoản quyền đầy đủ mới xoá được."""
     p = session.get(Patient, ma_bn)
     if not p:
         raise HTTPException(status_code=404, detail="Không tìm thấy bệnh nhân")
-    case = session.exec(select(AACase).where(AACase.ma_bn == ma_bn)).first()
-    if case:
-        for f in session.exec(select(AAFollowUp).where(AAFollowUp.case_id == case.id)).all():
-            session.delete(f)
-        session.delete(case)
+    for cfg in DISEASE_CONFIGS:
+        CaseModel, FUModel = cfg["case_model"], cfg["followup_model"]
+        case = session.exec(select(CaseModel).where(CaseModel.ma_bn == ma_bn)).first()
+        if case:
+            for f in session.exec(select(FUModel).where(FUModel.case_id == case.id)).all():
+                session.delete(f)
+            session.delete(case)
     session.delete(p)
     session.commit()
     return {"ok": True}
 
 
-@app.delete("/patients/{ma_bn}")
-def delete_patient(ma_bn: str, session: Session = Depends(get_session), doctor: Doctor = Depends(require_export_permission)):
-    """Xoá toàn bộ hồ sơ của 1 bệnh nhân (bệnh án + mọi lần tái khám + thông tin bệnh nhân) —
-    dùng để dọn dữ liệu demo/test, không thể hoàn tác. Chỉ tài khoản quyền đầy đủ mới xoá được."""
-    p = session.get(Patient, ma_bn)
-    if not p:
-        raise HTTPException(status_code=404, detail="Không tìm thấy bệnh nhân")
-    case = session.exec(select(AACase).where(AACase.ma_bn == ma_bn)).first()
-    if case:
-        for f in session.exec(select(AAFollowUp).where(AAFollowUp.case_id == case.id)).all():
-            session.delete(f)
-        session.delete(case)
-    session.delete(p)
+def _find_disease_config(benh: str):
+    cfg = next((c for c in DISEASE_CONFIGS if c["key"] == benh.lower()), None)
+    if not cfg:
+        raise HTTPException(status_code=404, detail=f"Không rõ loại bệnh '{benh}'")
+    return cfg
+
+
+@app.delete("/cases/{ma_bn}/{benh}")
+def delete_case(ma_bn: str, benh: str, session: Session = Depends(get_session), doctor: Doctor = Depends(require_export_permission)):
+    """Xoá riêng 1 bệnh án (bệnh án mới + toàn bộ tái khám của đúng 1 bệnh) — GIỮ LẠI thông tin bệnh nhân,
+    dùng khi cần làm lại từ đầu 1 bệnh án nhưng không muốn nhập lại hành chính bệnh nhân."""
+    cfg = _find_disease_config(benh)
+    CaseModel, FUModel = cfg["case_model"], cfg["followup_model"]
+    case = session.exec(select(CaseModel).where(CaseModel.ma_bn == ma_bn)).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Không tìm thấy bệnh án")
+    for f in session.exec(select(FUModel).where(FUModel.case_id == case.id)).all():
+        session.delete(f)
+    session.delete(case)
+    session.commit()
+    return {"ok": True}
+
+
+@app.delete("/cases/{ma_bn}/{benh}/followups/{followup_id}")
+def delete_followup(ma_bn: str, benh: str, followup_id: int, session: Session = Depends(get_session), doctor: Doctor = Depends(require_export_permission)):
+    """Xoá riêng 1 lần tái khám — giữ nguyên bệnh án mới và các lần tái khám khác."""
+    cfg = _find_disease_config(benh)
+    FUModel = cfg["followup_model"]
+    fu = session.get(FUModel, followup_id)
+    if not fu:
+        raise HTTPException(status_code=404, detail="Không tìm thấy lần tái khám")
+    session.delete(fu)
     session.commit()
     return {"ok": True}
 
