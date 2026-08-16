@@ -48,6 +48,7 @@ class PatientIn(BaseModel):
     ho_ten: Optional[str] = None
     gioi_tinh: Optional[str] = None
     nam_sinh: Optional[int] = None
+    dan_toc: Optional[str] = None
     dia_chi: Optional[str] = None
     sdt: Optional[str] = None
 
@@ -212,6 +213,15 @@ def parse_date(value) -> Optional[date]:
         return date.fromisoformat(str(value)[:10])
     except ValueError:
         return None
+
+
+# Danh sách các bệnh đang hỗ trợ — dùng chung cho dashboard/tra cứu/danh sách chờ GPB, để mỗi khi
+# thêm bệnh mới chỉ cần thêm 1 dòng ở đây thay vì sửa lại từng endpoint riêng.
+DISEASE_CONFIGS = [
+    {"key": "aa", "label": "AA", "case_model": AACase, "followup_model": AAFollowUp},
+    {"key": "aga", "label": "AGA", "case_model": AGACase, "followup_model": AGAFollowUp},
+    {"key": "nonscar", "label": "NONSCAR", "case_model": NonScarCase, "followup_model": NonScarFollowUp},
+]
 
 
 def next_ma_luu_tru(session: Session, disease: str, model=AACase) -> str:
@@ -660,7 +670,7 @@ def create_nonscar_case(
     existing = session.exec(select(NonScarCase).where(NonScarCase.ma_bn == ma_bn)).first()
     if existing:
         raise HTTPException(status_code=400, detail=f"Bệnh nhân đã có mã lưu trữ NONSCAR: {existing.ma_luu_tru}")
-    ma_luu_tru = next_ma_luu_tru(session, "NONSCAR", NonScarCase)
+    ma_luu_tru = next_ma_luu_tru(session, "NS", NonScarCase)
     case = NonScarCase(
         ma_luu_tru=ma_luu_tru,
         ma_bn=ma_bn,
@@ -758,51 +768,54 @@ def save_nonscar_followup_data(
 @app.get("/dashboard/today")
 def dashboard_today(session: Session = Depends(get_session), doctor: Doctor = Depends(get_current_doctor)):
     today = date.today()
-    new_cases = session.exec(select(AACase).where(AACase.ngay_tao == today)).all()
-    followups = session.exec(select(AAFollowUp).where(AAFollowUp.ngay_kham == today)).all()
-
     out = []
-    for c in new_cases:
-        p = session.get(Patient, c.ma_bn)
-        d = json.loads(c.benh_an_moi)
-        out.append({
-            "loai": "Bệnh án mới", "ma_luu_tru": c.ma_luu_tru, "ma_bn": c.ma_bn, "benh": "AA",
-            "ho_ten": p.ho_ten if p else None, "da_dien_du_lieu": c.da_dien_du_lieu,
-            "bac_si_tao": c.bac_si_tao, "followup_id": None, "dieu_tri": d.get("dieuTri", ""),
-            "gpb_co": d.get("gpbCo"), "gpb_ngay_thuc_hien": d.get("gpbNgayThucHien"), "gpb_ket_qua": d.get("gpbKetQua"),
-            "has_anh": bool(d.get("anh")),
-        })
-    for f in followups:
-        c = session.get(AACase, f.case_id)
-        p = session.get(Patient, c.ma_bn) if c else None
-        fd = json.loads(f.data)
-        out.append({
-            "loai": "Tái khám", "ma_luu_tru": c.ma_luu_tru if c else None, "ma_bn": c.ma_bn if c else None, "benh": "AA",
-            "ho_ten": p.ho_ten if p else None, "da_dien_du_lieu": f.da_dien_du_lieu,
-            "bac_si_tao": f.bac_si_tao, "followup_id": f.id, "dieu_tri": f.dieu_tri or "",
-            "gpb_co": fd.get("gpbCo"), "gpb_ngay_thuc_hien": fd.get("gpbNgayThucHien"), "gpb_ket_qua": fd.get("gpbKetQua"),
-            "has_anh": bool(fd.get("anh")),
-        })
+    for cfg in DISEASE_CONFIGS:
+        CaseModel, FUModel, label = cfg["case_model"], cfg["followup_model"], cfg["label"]
+        new_cases = session.exec(select(CaseModel).where(CaseModel.ngay_tao == today)).all()
+        followups = session.exec(select(FUModel).where(FUModel.ngay_kham == today)).all()
+        for c in new_cases:
+            p = session.get(Patient, c.ma_bn)
+            d = json.loads(c.benh_an_moi)
+            out.append({
+                "loai": "Bệnh án mới", "ma_luu_tru": c.ma_luu_tru, "ma_bn": c.ma_bn, "benh": label,
+                "ho_ten": p.ho_ten if p else None, "da_dien_du_lieu": c.da_dien_du_lieu,
+                "bac_si_tao": c.bac_si_tao, "followup_id": None, "dieu_tri": d.get("dieuTri", ""),
+                "gpb_co": d.get("gpbCo"), "gpb_ngay_thuc_hien": d.get("gpbNgayThucHien"), "gpb_ket_qua": d.get("gpbKetQua"),
+                "has_anh": bool(d.get("anh")),
+            })
+        for f in followups:
+            c = session.get(CaseModel, f.case_id)
+            p = session.get(Patient, c.ma_bn) if c else None
+            fd = json.loads(f.data)
+            out.append({
+                "loai": "Tái khám", "ma_luu_tru": c.ma_luu_tru if c else None, "ma_bn": c.ma_bn if c else None, "benh": label,
+                "ho_ten": p.ho_ten if p else None, "da_dien_du_lieu": f.da_dien_du_lieu,
+                "bac_si_tao": f.bac_si_tao, "followup_id": f.id, "dieu_tri": f.dieu_tri or "",
+                "gpb_co": fd.get("gpbCo"), "gpb_ngay_thuc_hien": fd.get("gpbNgayThucHien"), "gpb_ket_qua": fd.get("gpbKetQua"),
+                "has_anh": bool(fd.get("anh")),
+            })
     return {"ngay": today.isoformat(), "tong_so": len(out), "danh_sach": out}
 
 
 @app.get("/gpb/waitlist")
 def gpb_waitlist(session: Session = Depends(get_session), doctor: Doctor = Depends(get_current_doctor)):
-    """Danh sách chờ giải phẫu bệnh — quét toàn bộ bệnh nhân (không chỉ hôm nay), mở cho mọi tài khoản đăng nhập."""
+    """Danh sách chờ giải phẫu bệnh — quét toàn bộ bệnh nhân của cả 3 bệnh (không chỉ hôm nay), mở cho mọi tài khoản đăng nhập."""
     out = []
-    for c in session.exec(select(AACase)).all():
-        d = json.loads(c.benh_an_moi)
-        st = compute_gpb_status(d)
-        if st and st["type"] == "waiting":
-            p = session.get(Patient, c.ma_bn)
-            out.append({"loai": "Bệnh án mới", "ma_bn": c.ma_bn, "ho_ten": p.ho_ten if p else None, "ma_luu_tru": c.ma_luu_tru, "days": st["days"], "followup_id": None})
-        followups = session.exec(select(AAFollowUp).where(AAFollowUp.case_id == c.id).order_by(AAFollowUp.ngay_kham)).all()
-        for i, f in enumerate(followups):
-            fd = json.loads(f.data)
-            st = compute_gpb_status(fd)
+    for cfg in DISEASE_CONFIGS:
+        CaseModel, FUModel, label = cfg["case_model"], cfg["followup_model"], cfg["label"]
+        for c in session.exec(select(CaseModel)).all():
+            d = json.loads(c.benh_an_moi)
+            st = compute_gpb_status(d)
             if st and st["type"] == "waiting":
                 p = session.get(Patient, c.ma_bn)
-                out.append({"loai": f"Tái khám {i + 1}", "ma_bn": c.ma_bn, "ho_ten": p.ho_ten if p else None, "ma_luu_tru": c.ma_luu_tru, "days": st["days"], "followup_id": f.id})
+                out.append({"loai": "Bệnh án mới", "benh": label, "ma_bn": c.ma_bn, "ho_ten": p.ho_ten if p else None, "ma_luu_tru": c.ma_luu_tru, "days": st["days"], "followup_id": None})
+            followups = session.exec(select(FUModel).where(FUModel.case_id == c.id).order_by(FUModel.ngay_kham)).all()
+            for i, f in enumerate(followups):
+                fd = json.loads(f.data)
+                st = compute_gpb_status(fd)
+                if st and st["type"] == "waiting":
+                    p = session.get(Patient, c.ma_bn)
+                    out.append({"loai": f"Tái khám {i + 1}", "benh": label, "ma_bn": c.ma_bn, "ho_ten": p.ho_ten if p else None, "ma_luu_tru": c.ma_luu_tru, "days": st["days"], "followup_id": f.id})
     out.sort(key=lambda r: -r["days"])
     return out
 
@@ -839,90 +852,95 @@ def search_cases(
     # Tìm bệnh nhân đủ số lượt tái khám (và đúng tên nếu có lọc thêm), trả về TOÀN BỘ
     # bản ghi của họ (T0 + mọi lần tái khám) — bỏ qua các bộ lọc ngày/mức độ/điều trị khác.
     if so_luot_tai_kham_it_nhat and so_luot_tai_kham_it_nhat > 0:
-        for c in session.exec(select(AACase)).all():
-            p = session.get(Patient, c.ma_bn)
-            if ten_bn and ten_bn.lower() not in ((p.ho_ten if p else "") or "").lower():
-                continue
-            followups = session.exec(
-                select(AAFollowUp).where(AAFollowUp.case_id == c.id).order_by(AAFollowUp.ngay_kham)
-            ).all()
-            so_luot_tk = len(followups)
-            if so_luot_tk < so_luot_tai_kham_it_nhat:
-                continue
-            d0 = json.loads(c.benh_an_moi)
-            results.append({
-                "loai": "Bệnh án mới", "ma_luu_tru": c.ma_luu_tru, "ma_bn": c.ma_bn,
-                "ho_ten": p.ho_ten if p else None, "ngay": c.ngay_tao.isoformat() if c.ngay_tao else None,
-                "muc_do_nang": c.muc_do_nang, "da_dien_du_lieu": c.da_dien_du_lieu, "followup_id": None,
-                "so_luot_tai_kham": so_luot_tk,
-                "gpb_co": d0.get("gpbCo"), "gpb_ngay_thuc_hien": d0.get("gpbNgayThucHien"), "gpb_ket_qua": d0.get("gpbKetQua"),
-                "has_anh": bool(d0.get("anh")),
-            })
-            for i, f in enumerate(followups):
-                fd = json.loads(f.data)
+        for cfg in DISEASE_CONFIGS:
+            CaseModel, FUModel, label = cfg["case_model"], cfg["followup_model"], cfg["label"]
+            for c in session.exec(select(CaseModel)).all():
+                p = session.get(Patient, c.ma_bn)
+                if ten_bn and ten_bn.lower() not in ((p.ho_ten if p else "") or "").lower():
+                    continue
+                followups = session.exec(
+                    select(FUModel).where(FUModel.case_id == c.id).order_by(FUModel.ngay_kham)
+                ).all()
+                so_luot_tk = len(followups)
+                if so_luot_tk < so_luot_tai_kham_it_nhat:
+                    continue
+                d0 = json.loads(c.benh_an_moi)
                 results.append({
-                    "loai": f"Tái khám {i + 1}", "ma_luu_tru": c.ma_luu_tru, "ma_bn": c.ma_bn,
-                    "ho_ten": p.ho_ten if p else None, "ngay": f.ngay_kham.isoformat() if f.ngay_kham else None,
-                    "muc_do_nang": f.muc_do_nang, "da_dien_du_lieu": f.da_dien_du_lieu, "followup_id": f.id,
+                    "loai": "Bệnh án mới", "benh": label, "ma_luu_tru": c.ma_luu_tru, "ma_bn": c.ma_bn,
+                    "ho_ten": p.ho_ten if p else None, "ngay": c.ngay_tao.isoformat() if c.ngay_tao else None,
+                    "muc_do_nang": c.muc_do_nang, "da_dien_du_lieu": c.da_dien_du_lieu, "followup_id": None,
                     "so_luot_tai_kham": so_luot_tk,
-                    "gpb_co": fd.get("gpbCo"), "gpb_ngay_thuc_hien": fd.get("gpbNgayThucHien"), "gpb_ket_qua": fd.get("gpbKetQua"),
-            "has_anh": bool(fd.get("anh")),
+                    "gpb_co": d0.get("gpbCo"), "gpb_ngay_thuc_hien": d0.get("gpbNgayThucHien"), "gpb_ket_qua": d0.get("gpbKetQua"),
+                    "has_anh": bool(d0.get("anh")),
                 })
+                for i, f in enumerate(followups):
+                    fd = json.loads(f.data)
+                    results.append({
+                        "loai": f"Tái khám {i + 1}", "benh": label, "ma_luu_tru": c.ma_luu_tru, "ma_bn": c.ma_bn,
+                        "ho_ten": p.ho_ten if p else None, "ngay": f.ngay_kham.isoformat() if f.ngay_kham else None,
+                        "muc_do_nang": f.muc_do_nang, "da_dien_du_lieu": f.da_dien_du_lieu, "followup_id": f.id,
+                        "so_luot_tai_kham": so_luot_tk,
+                        "gpb_co": fd.get("gpbCo"), "gpb_ngay_thuc_hien": fd.get("gpbNgayThucHien"), "gpb_ket_qua": fd.get("gpbKetQua"),
+                        "has_anh": bool(fd.get("anh")),
+                    })
         results.sort(key=lambda r: (r["ma_bn"] or "", r["ngay"] or ""))
         return {"tong_so": len(results), "ket_qua": results}
 
-    q = select(AACase)
-    if muc_do:
-        q = q.where(AACase.muc_do_nang == muc_do)
-    if chi_chua_dien is not None:
-        q = q.where(AACase.da_dien_du_lieu == (not chi_chua_dien))
-    if tu_ngay:
-        q = q.where(AACase.ngay_tao >= tu_ngay)
-    if den_ngay:
-        q = q.where(AACase.ngay_tao <= den_ngay)
-    for c in session.exec(q).all():
-        p = session.get(Patient, c.ma_bn)
-        if ten_bn and ten_bn.lower() not in ((p.ho_ten if p else "") or "").lower():
-            continue
-        if dieu_tri_chua and dieu_tri_chua.lower() not in str(get_json_path(c.benh_an_moi, "dieuTri") or "").lower():
-            continue
-        if xet_nghiem_co and not get_json_path(c.benh_an_moi, xet_nghiem_co):
-            continue
-        d0 = json.loads(c.benh_an_moi)
-        results.append({
-            "loai": "Bệnh án mới", "ma_luu_tru": c.ma_luu_tru, "ma_bn": c.ma_bn,
-            "ho_ten": p.ho_ten if p else None, "ngay": c.ngay_tao.isoformat() if c.ngay_tao else None,
-            "muc_do_nang": c.muc_do_nang, "da_dien_du_lieu": c.da_dien_du_lieu, "followup_id": None,
-            "gpb_co": d0.get("gpbCo"), "gpb_ngay_thuc_hien": d0.get("gpbNgayThucHien"), "gpb_ket_qua": d0.get("gpbKetQua"),
-                "has_anh": bool(d0.get("anh")),
-        })
+    for cfg in DISEASE_CONFIGS:
+        CaseModel, FUModel, label = cfg["case_model"], cfg["followup_model"], cfg["label"]
 
-    q2 = select(AAFollowUp)
-    if muc_do:
-        q2 = q2.where(AAFollowUp.muc_do_nang == muc_do)
-    if dieu_tri_chua:
-        q2 = q2.where(AAFollowUp.dieu_tri.like(f"%{dieu_tri_chua}%"))
-    if chi_chua_dien is not None:
-        q2 = q2.where(AAFollowUp.da_dien_du_lieu == (not chi_chua_dien))
-    if tu_ngay:
-        q2 = q2.where(AAFollowUp.ngay_kham >= tu_ngay)
-    if den_ngay:
-        q2 = q2.where(AAFollowUp.ngay_kham <= den_ngay)
-    for f in session.exec(q2).all():
-        if xet_nghiem_co and not get_json_path(f.data, xet_nghiem_co):
-            continue
-        c = session.get(AACase, f.case_id)
-        p = session.get(Patient, c.ma_bn) if c else None
-        if ten_bn and ten_bn.lower() not in ((p.ho_ten if p else "") or "").lower():
-            continue
-        fd = json.loads(f.data)
-        results.append({
-            "loai": "Tái khám", "ma_luu_tru": c.ma_luu_tru if c else None, "ma_bn": c.ma_bn if c else None,
-            "ho_ten": p.ho_ten if p else None, "ngay": f.ngay_kham.isoformat() if f.ngay_kham else None,
-            "muc_do_nang": f.muc_do_nang, "da_dien_du_lieu": f.da_dien_du_lieu, "followup_id": f.id,
-            "gpb_co": fd.get("gpbCo"), "gpb_ngay_thuc_hien": fd.get("gpbNgayThucHien"), "gpb_ket_qua": fd.get("gpbKetQua"),
-            "has_anh": bool(fd.get("anh")),
-        })
+        q = select(CaseModel)
+        if muc_do:
+            q = q.where(CaseModel.muc_do_nang == muc_do)
+        if chi_chua_dien is not None:
+            q = q.where(CaseModel.da_dien_du_lieu == (not chi_chua_dien))
+        if tu_ngay:
+            q = q.where(CaseModel.ngay_tao >= tu_ngay)
+        if den_ngay:
+            q = q.where(CaseModel.ngay_tao <= den_ngay)
+        for c in session.exec(q).all():
+            p = session.get(Patient, c.ma_bn)
+            if ten_bn and ten_bn.lower() not in ((p.ho_ten if p else "") or "").lower():
+                continue
+            if dieu_tri_chua and dieu_tri_chua.lower() not in str(get_json_path(c.benh_an_moi, "dieuTri") or "").lower():
+                continue
+            if xet_nghiem_co and not get_json_path(c.benh_an_moi, xet_nghiem_co):
+                continue
+            d0 = json.loads(c.benh_an_moi)
+            results.append({
+                "loai": "Bệnh án mới", "benh": label, "ma_luu_tru": c.ma_luu_tru, "ma_bn": c.ma_bn,
+                "ho_ten": p.ho_ten if p else None, "ngay": c.ngay_tao.isoformat() if c.ngay_tao else None,
+                "muc_do_nang": c.muc_do_nang, "da_dien_du_lieu": c.da_dien_du_lieu, "followup_id": None,
+                "gpb_co": d0.get("gpbCo"), "gpb_ngay_thuc_hien": d0.get("gpbNgayThucHien"), "gpb_ket_qua": d0.get("gpbKetQua"),
+                "has_anh": bool(d0.get("anh")),
+            })
+
+        q2 = select(FUModel)
+        if muc_do:
+            q2 = q2.where(FUModel.muc_do_nang == muc_do)
+        if dieu_tri_chua:
+            q2 = q2.where(FUModel.dieu_tri.like(f"%{dieu_tri_chua}%"))
+        if chi_chua_dien is not None:
+            q2 = q2.where(FUModel.da_dien_du_lieu == (not chi_chua_dien))
+        if tu_ngay:
+            q2 = q2.where(FUModel.ngay_kham >= tu_ngay)
+        if den_ngay:
+            q2 = q2.where(FUModel.ngay_kham <= den_ngay)
+        for f in session.exec(q2).all():
+            if xet_nghiem_co and not get_json_path(f.data, xet_nghiem_co):
+                continue
+            c = session.get(CaseModel, f.case_id)
+            p = session.get(Patient, c.ma_bn) if c else None
+            if ten_bn and ten_bn.lower() not in ((p.ho_ten if p else "") or "").lower():
+                continue
+            fd = json.loads(f.data)
+            results.append({
+                "loai": "Tái khám", "benh": label, "ma_luu_tru": c.ma_luu_tru if c else None, "ma_bn": c.ma_bn if c else None,
+                "ho_ten": p.ho_ten if p else None, "ngay": f.ngay_kham.isoformat() if f.ngay_kham else None,
+                "muc_do_nang": f.muc_do_nang, "da_dien_du_lieu": f.da_dien_du_lieu, "followup_id": f.id,
+                "gpb_co": fd.get("gpbCo"), "gpb_ngay_thuc_hien": fd.get("gpbNgayThucHien"), "gpb_ket_qua": fd.get("gpbKetQua"),
+                "has_anh": bool(fd.get("anh")),
+            })
 
     results.sort(key=lambda r: r["ngay"] or "", reverse=True)
     return {"tong_so": len(results), "ket_qua": results}
@@ -943,30 +961,34 @@ def recent_cases(limit: int = 8, session: Session = Depends(get_session), doctor
 # ---------- xuất dữ liệu nghiên cứu (chỉ tài khoản được cấp quyền) ----------
 @app.get("/export/raw")
 def export_raw(session: Session = Depends(get_session), doctor: Doctor = Depends(require_export_permission)):
-    """Trả về toàn bộ dữ liệu AA (mọi bệnh nhân) dạng JSON đầy đủ — dùng để dựng file Excel phía trình duyệt."""
+    """Trả về toàn bộ dữ liệu của cả 3 bệnh (mọi bệnh nhân) dạng JSON đầy đủ — dùng để dựng file Excel phía trình duyệt."""
     out = []
-    for c in session.exec(select(AACase)).all():
-        p = session.get(Patient, c.ma_bn)
-        followups = session.exec(
-            select(AAFollowUp).where(AAFollowUp.case_id == c.id).order_by(AAFollowUp.ngay_kham)
-        ).all()
-        out.append({
-            "maBN": c.ma_bn,
-            "patient": {
-                "hoTen": p.ho_ten if p else None, "gioiTinh": p.gioi_tinh if p else None,
-                "namSinh": p.nam_sinh if p else None,
-            },
-            "case": {
-                "maLuuTru": c.ma_luu_tru, "ngayTao": c.ngay_tao.isoformat() if c.ngay_tao else None,
-                "daDienDuLieu": c.da_dien_du_lieu,
-                "benhAnMoi": refresh_images(json.loads(c.benh_an_moi)),
-                "taiKhams": [
-                    {"id": f.id, "ngayKham": f.ngay_kham.isoformat() if f.ngay_kham else None,
-                     "daDienDuLieu": f.da_dien_du_lieu, **refresh_images(json.loads(f.data))}
-                    for f in followups
-                ],
-            },
-        })
+    for cfg in DISEASE_CONFIGS:
+        CaseModel, FUModel, label = cfg["case_model"], cfg["followup_model"], cfg["label"]
+        for c in session.exec(select(CaseModel)).all():
+            p = session.get(Patient, c.ma_bn)
+            followups = session.exec(
+                select(FUModel).where(FUModel.case_id == c.id).order_by(FUModel.ngay_kham)
+            ).all()
+            out.append({
+                "maBN": c.ma_bn,
+                "benh": label,
+                "patient": {
+                    "hoTen": p.ho_ten if p else None, "gioiTinh": p.gioi_tinh if p else None,
+                    "namSinh": p.nam_sinh if p else None, "danToc": p.dan_toc if p else None,
+                    "diaChi": p.dia_chi if p else None, "sdt": p.sdt if p else None,
+                },
+                "case": {
+                    "maLuuTru": c.ma_luu_tru, "ngayTao": c.ngay_tao.isoformat() if c.ngay_tao else None,
+                    "daDienDuLieu": c.da_dien_du_lieu,
+                    "benhAnMoi": refresh_images(json.loads(c.benh_an_moi)),
+                    "taiKhams": [
+                        {"id": f.id, "ngayKham": f.ngay_kham.isoformat() if f.ngay_kham else None,
+                         "daDienDuLieu": f.da_dien_du_lieu, **refresh_images(json.loads(f.data))}
+                        for f in followups
+                    ],
+                },
+            })
     return out
 
 
