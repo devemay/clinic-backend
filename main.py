@@ -838,7 +838,7 @@ def search_cases(
     ten_bn: Optional[str] = None,
     tu_ngay: Optional[str] = None,
     den_ngay: Optional[str] = None,
-    muc_do: Optional[str] = None,
+    benh: Optional[str] = None,
     dieu_tri_chua: Optional[str] = None,
     xet_nghiem_co: Optional[str] = None,
     chi_chua_dien: Optional[bool] = None,
@@ -846,13 +846,14 @@ def search_cases(
     session: Session = Depends(get_session),
     doctor: Doctor = Depends(get_current_doctor),
 ):
+    configs = [c for c in DISEASE_CONFIGS if not benh or c["label"] == benh]
     results = []
 
     # ---------- Chế độ thống kê theo số lượt tái khám tối thiểu ----------
     # Tìm bệnh nhân đủ số lượt tái khám (và đúng tên nếu có lọc thêm), trả về TOÀN BỘ
     # bản ghi của họ (T0 + mọi lần tái khám) — bỏ qua các bộ lọc ngày/mức độ/điều trị khác.
     if so_luot_tai_kham_it_nhat and so_luot_tai_kham_it_nhat > 0:
-        for cfg in DISEASE_CONFIGS:
+        for cfg in configs:
             CaseModel, FUModel, label = cfg["case_model"], cfg["followup_model"], cfg["label"]
             for c in session.exec(select(CaseModel)).all():
                 p = session.get(Patient, c.ma_bn)
@@ -886,12 +887,10 @@ def search_cases(
         results.sort(key=lambda r: (r["ma_bn"] or "", r["ngay"] or ""))
         return {"tong_so": len(results), "ket_qua": results}
 
-    for cfg in DISEASE_CONFIGS:
+    for cfg in configs:
         CaseModel, FUModel, label = cfg["case_model"], cfg["followup_model"], cfg["label"]
 
         q = select(CaseModel)
-        if muc_do:
-            q = q.where(CaseModel.muc_do_nang == muc_do)
         if chi_chua_dien is not None:
             q = q.where(CaseModel.da_dien_du_lieu == (not chi_chua_dien))
         if tu_ngay:
@@ -916,8 +915,6 @@ def search_cases(
             })
 
         q2 = select(FUModel)
-        if muc_do:
-            q2 = q2.where(FUModel.muc_do_nang == muc_do)
         if dieu_tri_chua:
             q2 = q2.where(FUModel.dieu_tri.like(f"%{dieu_tri_chua}%"))
         if chi_chua_dien is not None:
@@ -960,10 +957,13 @@ def recent_cases(limit: int = 8, session: Session = Depends(get_session), doctor
 
 # ---------- xuất dữ liệu nghiên cứu (chỉ tài khoản được cấp quyền) ----------
 @app.get("/export/raw")
-def export_raw(session: Session = Depends(get_session), doctor: Doctor = Depends(require_export_permission)):
-    """Trả về toàn bộ dữ liệu của cả 3 bệnh (mọi bệnh nhân) dạng JSON đầy đủ — dùng để dựng file Excel phía trình duyệt."""
+def export_raw(benh: Optional[str] = None, session: Session = Depends(get_session), doctor: Doctor = Depends(require_export_permission)):
+    """Trả về toàn bộ dữ liệu của cả 3 bệnh (mọi bệnh nhân) dạng JSON đầy đủ — dùng để dựng file Excel phía trình duyệt.
+    Truyền benh=AA/AGA/NONSCAR để chỉ lấy đúng 1 bệnh."""
     out = []
     for cfg in DISEASE_CONFIGS:
+        if benh and cfg["label"] != benh:
+            continue
         CaseModel, FUModel, label = cfg["case_model"], cfg["followup_model"], cfg["label"]
         for c in session.exec(select(CaseModel)).all():
             p = session.get(Patient, c.ma_bn)
