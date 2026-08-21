@@ -27,6 +27,13 @@ app.add_middleware(
 )
 
 
+# Endpoint đánh thức server — không cần đăng nhập, không đụng database, phản hồi cực nhẹ.
+# Dùng URL này cho dịch vụ ping ngoài (cron-job.org, UptimeRobot...) thay vì /docs (quá nặng).
+@app.get("/health")
+def health():
+    return "ok"
+
+
 @app.on_event("startup")
 def on_startup():
     init_db()
