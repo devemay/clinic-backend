@@ -16,6 +16,7 @@ from auth import authenticate_doctor, create_access_token, get_current_doctor, r
 from database import get_session, init_db
 from models import AACase, AAFollowUp, AGACase, AGAFollowUp, NonScarCase, NonScarFollowUp, Doctor, Patient
 from storage import get_storage, refresh_url
+import survey
 
 app = FastAPI(title="Bệnh án nghiên cứu — API")
 
@@ -55,6 +56,7 @@ class PatientIn(BaseModel):
     ho_ten: Optional[str] = None
     gioi_tinh: Optional[str] = None
     nam_sinh: Optional[int] = None
+    ngay_sinh: Optional[date] = None
     dan_toc: Optional[str] = None
     dia_chi: Optional[str] = None
     sdt: Optional[str] = None
@@ -160,7 +162,7 @@ NEW_CASE_SECTIONS = {
     "Khám thực thể": ["sotStatus", "mach", "ha", "viTriRungToc", "pullTest", "tocToMoc", "viTriTonThuong", "tonThuongMong", "trieuChungCoNang", "theLamSang"],
     "Mức độ nặng (SALT)": ["soLuongMang", "dienTichThucTe", "vung", "mangDai", "mangRong", "mangViTri", "yeuToNangBac"],
     "Dermoscopy": ["dermoscopy"],
-    "Cận lâm sàng": ["labs", "treponema", "viNam", "sieuAmTuyenGiap", "moBenhHoc", "il15", "il13", "ifnG", "ifnGMo", "il13Mo", "ngayLayMau"],
+    "Cận lâm sàng": ["labs", "treponema", "viNam", "sieuAmTuyenGiap", "il15", "il13", "ifnG", "ifnGMo", "il13Mo", "ngayLayMau"],
     "Giải phẫu bệnh": ["gpbCo"],
     "Điều trị & thủ thuật": ["dieuTri", "vas", "tdkm", "henKham"],
     "Hình ảnh": ["anh"],
@@ -179,7 +181,8 @@ NEW_AGA_CASE_SECTIONS = {
     "Bệnh sử - Tiền sử": ["thoiGianKhoiPhat", "benhSuTruoc", "tienSuBanThan", "tienSuGiaDinh"],
     "Khám thực thể": ["canNang", "chieuCao", "vongBung", "mach", "ha", "dauHieuCuongAndrogen", "phanBoRungToc", "matDoToc", "duongKinhSoiToc", "pullTest"],
     "Thang điểm": ["hamiltonNorwood", "sinclairScale", "ludwig", "pcos"],
-    "Cận lâm sàng": ["labs", "sieuAmOBung", "sieuAmTuyenGiap", "moBenhHoc", "dermoscopy", "vungTran", "vungDinh", "vungCham", "xnKhac"],
+    "Dermoscopy": ["dermoscopy", "vungTran", "vungDinh", "vungCham"],
+    "Cận lâm sàng": ["labs", "sieuAmOBung", "sieuAmTuyenGiap", "xnKhac"],
     "Giải phẫu bệnh": ["gpbCo"],
     "Điều trị & thủ thuật": ["dieuTri", "henKham"],
     "Hình ảnh": ["anh"],
@@ -198,7 +201,7 @@ NEW_NONSCAR_CASE_SECTIONS = {
     "Bệnh sử - Tiền sử": ["thoiGianKhoiPhat", "benhSuTruoc", "rungTocTruocDay", "tienSuBanThan", "tienSuGiaDinh"],
     "Khám thực thể": ["coNangDaDau", "chieuCao", "canNang", "mach", "ha", "viTriRungToc", "pullTestStatus", "kieuRungToc", "dauHieuViemSeoTeoDa"],
     "Dermoscopy": ["dermoscopy"],
-    "Cận lâm sàng": ["labs", "testNhanhGiangMai", "sieuAmTuyenGiap", "moBenhHoc", "xnKhac"],
+    "Cận lâm sàng": ["labs", "testNhanhGiangMai", "sieuAmTuyenGiap", "xnKhac"],
     "Giải phẫu bệnh": ["gpbCo"],
     "Điều trị & thủ thuật": ["dieuTri", "henKham"],
     "Hình ảnh": ["anh"],
@@ -392,6 +395,18 @@ def get_patient(ma_bn: str, session: Session = Depends(get_session), doctor: Doc
     if not p:
         raise HTTPException(status_code=404, detail="Không tìm thấy bệnh nhân")
     return p
+
+
+# ---------- phiếu khảo sát bệnh nhân tự điền trên hệ thống bệnh viện ----------
+@app.get("/survey/{ma_bn}")
+def get_survey(ma_bn: str, benh: str = "", doctor: Doctor = Depends(get_current_doctor)):
+    """Đọc phiếu khảo sát của bệnh nhân từ hệ thống bệnh viện (api.dalieu.vn).
+
+    Truyền benh=aa/aga/nonscar để nhận thêm "mapped" — các trường đã ánh xạ sẵn sang
+    đúng tên trường của bệnh án tương ứng. Luôn trả mã 200 kèm cờ found/loi thay vì
+    ném lỗi, để hệ thống bệnh viện chậm hoặc mất mạng không chặn màn nhập bệnh án.
+    """
+    return survey.build_response(ma_bn, benh)
 
 
 @app.post("/patients")
@@ -1004,6 +1019,7 @@ def export_raw(benh: Optional[str] = None, session: Session = Depends(get_sessio
                 "patient": {
                     "hoTen": p.ho_ten if p else None, "gioiTinh": p.gioi_tinh if p else None,
                     "namSinh": p.nam_sinh if p else None, "danToc": p.dan_toc if p else None,
+                    "ngaySinh": p.ngay_sinh.isoformat() if (p and p.ngay_sinh) else None,
                     "diaChi": p.dia_chi if p else None, "sdt": p.sdt if p else None,
                 },
                 "case": {

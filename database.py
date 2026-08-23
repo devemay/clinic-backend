@@ -21,7 +21,7 @@ else:
 # vào bảng đã tồn tại, nên cần tự kiểm tra & ALTER TABLE thủ công tại đây (không đụng dữ liệu cũ).
 NEW_COLUMNS = {
     "doctor": [("is_admin", "BOOLEAN DEFAULT 0")],
-    "patient": [("dan_toc", "VARCHAR(64)")],
+    "patient": [("dan_toc", "VARCHAR(64)"), ("ngay_sinh", "DATE")],
 }
 
 

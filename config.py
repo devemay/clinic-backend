@@ -29,5 +29,14 @@ BACKUP_S3_BUCKET = os.environ.get("BACKUP_S3_BUCKET")
 
 USE_BACKUP_S3 = bool(BACKUP_AWS_ACCESS_KEY_ID and BACKUP_AWS_SECRET_ACCESS_KEY and BACKUP_S3_BUCKET)
 
+# ---------- Phiếu khảo sát điện tử của bệnh viện (bệnh nhân tự điền trước khi vào khám) ----------
+# Đổi được bằng biến môi trường nếu bệnh viện chuyển địa chỉ hoặc đổi phòng khám.
+SURVEY_API_BASE = os.environ.get("SURVEY_API_BASE", "https://api.dalieu.vn")
+SURVEY_ROOM_ID = os.environ.get("SURVEY_ROOM_ID", "2283")
+try:
+    SURVEY_TIMEOUT = float(os.environ.get("SURVEY_TIMEOUT", "8"))
+except ValueError:
+    SURVEY_TIMEOUT = 8.0
+
 # ---------- auth ----------
 SECRET_KEY = os.environ.get("CLINIC_SECRET_KEY", "change-this-secret-in-production")

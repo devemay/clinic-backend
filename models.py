@@ -21,6 +21,9 @@ class Patient(SQLModel, table=True):
     ho_ten: Optional[str] = Field(default=None, max_length=128)
     gioi_tinh: Optional[str] = Field(default=None, max_length=16)
     nam_sinh: Optional[int] = None
+    # Ngày sinh đầy đủ lấy tự động từ hệ thống bệnh viện; nam_sinh vẫn giữ nguyên để
+    # không phá vỡ dữ liệu cũ và các bản xuất Excel đang dùng cột "namSinh".
+    ngay_sinh: Optional[date] = None
     dan_toc: Optional[str] = Field(default=None, max_length=64)
     dia_chi: Optional[str] = Field(default=None, max_length=255)
     sdt: Optional[str] = Field(default=None, max_length=32)
