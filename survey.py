@@ -230,6 +230,8 @@ DLQI_KEYS = [
 
 def dlqi_total(a: dict) -> Optional[int]:
     """Tổng điểm DLQI 0-30. Trả None nếu bệnh nhân chưa trả lời câu nào."""
+    if not isinstance(a, dict):
+        return None
     vals = [_num(a.get(k)) for k in DLQI_KEYS]
     vals = [v for v in vals if v is not None]
     if not vals:
@@ -669,7 +671,7 @@ SURVEY_MAPPERS = {
 
 
 def map_survey(answers: Optional[dict], result: dict, benh: str) -> Dict[str, Any]:
-    if not answers:
+    if not isinstance(answers, dict) or not answers:
         return {}
     mapper = SURVEY_MAPPERS.get((benh or "").lower())
     if not mapper:
@@ -680,12 +682,37 @@ def map_survey(answers: Optional[dict], result: dict, benh: str) -> Dict[str, An
 # ---------- 5. Thông tin hành chính lấy từ phiếu ----------
 
 def _gioi_tinh(a: Optional[dict]) -> Optional[str]:
-    g = _txt((a or {}).get("gender")).lower()
+    if not isinstance(a, dict):
+        return None
+    g = _txt(a.get("gender")).lower()
     if g in ("female", "nu", "nữ", "f"):
         return "Nữ"
     if g in ("male", "nam", "m"):
         return "Nam"
     return None
+
+
+def parse_answers(raw) -> Optional[dict]:
+    """Đọc phần `answers` của phiếu khảo sát.
+
+    Hệ thống bệnh viện trả trường này dưới dạng CHUỖI JSON (có lúc còn bị mã hoá lồng
+    nhiều lớp), không phải đối tượng. Bản trước coi mặc định là đối tượng nên gặp bệnh
+    nhân ĐÃ điền phiếu là sập với `'str' object has no attribute 'get'` — còn bệnh nhân
+    chưa điền (answers = null) thì vẫn chạy, nên lỗi trông rất khó hiểu.
+    Trả None nếu không đọc được, để phần mềm coi như chưa có phiếu thay vì báo lỗi.
+    """
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, dict):
+        return json_safe(raw)
+    for _ in range(3):  # phòng trường hợp chuỗi JSON lồng nhiều lớp
+        if not isinstance(raw, str):
+            break
+        try:
+            raw = json.loads(raw, parse_constant=lambda _c: None)
+        except (ValueError, TypeError):
+            return None
+    return json_safe(raw) if isinstance(raw, dict) else None
 
 
 def build_response(ma_bn: str, benh: str) -> Dict[str, Any]:
@@ -695,12 +722,14 @@ def build_response(ma_bn: str, benh: str) -> Dict[str, Any]:
                 "khao_sat": None, "mapped": {}, "dlqi_tong": None}
 
     result = fetched["result"]
-    answers = result.get("answers") or None
+    answers = parse_answers(result.get("answers"))
+    khong_doc_duoc = bool(result.get("answers")) and not answers
     ngay_sinh = _txt(result.get("patientBirthDay"))[:10]
     mapped = map_survey(answers, result, benh)
     return {
         "found": True,
-        "loi": None,
+        "loi": ("Đọc được hồ sơ nhưng KHÔNG hiểu được định dạng phiếu khảo sát — "
+                "hệ thống bệnh viện có thể đã đổi cách trả dữ liệu." if khong_doc_duoc else None),
         "ma_bn": result.get("patientCode"),
         "ho_ten": _txt(result.get("patientName")) or None,
         "ngay_sinh": ngay_sinh or None,
