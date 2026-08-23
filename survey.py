@@ -32,10 +32,33 @@ def _call_api(ma_bn: str) -> Optional[dict]:
     url = f"{config.SURVEY_API_BASE}/api/services/app/ClinicSurveyAnswer/CheckSurvey?{params}"
     req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "benh-an-nghien-cuu/1.0"})
     with urllib.request.urlopen(req, timeout=config.SURVEY_TIMEOUT) as resp:
-        body = json.loads(resp.read().decode("utf-8"))
+        raw = resp.read().decode("utf-8", errors="replace")
+    # parse_constant: JSON của Python MẶC ĐỊNH chấp nhận NaN/Infinity, nhưng FastAPI thì
+    # KHÔNG đóng gói được 2 giá trị này -> đổi thành None ngay từ lúc đọc.
+    body = json.loads(raw, parse_constant=lambda _c: None)
     if not body.get("success"):
         return None
-    return body.get("result") or None
+    return json_safe(body.get("result")) or None
+
+
+def json_safe(value):
+    """Dọn dữ liệu từ hệ thống bệnh viện cho an toàn khi đóng gói JSON trả về trình duyệt.
+
+    Hai thứ làm FastAPI ném lỗi khi đóng gói — và lỗi lúc đóng gói thì Starlette trả 500
+    KHÔNG kèm header CORS, nên trình duyệt chỉ báo "Không kết nối được tới backend",
+    trông y hệt như server sập:
+      1. Số NaN / Infinity  -> ValueError: Out of range float values are not JSON compliant
+      2. Chuỗi chứa ký tự Unicode hỏng (lone surrogate) -> UnicodeEncodeError: surrogates not allowed
+    """
+    if isinstance(value, float):
+        return None if (value != value or value in (float("inf"), float("-inf"))) else value
+    if isinstance(value, str):
+        return value.encode("utf-8", "replace").decode("utf-8")
+    if isinstance(value, dict):
+        return {json_safe(k): json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe(v) for v in value]
+    return value
 
 
 def _ma_bn_candidates(ma_bn: str) -> List[str]:

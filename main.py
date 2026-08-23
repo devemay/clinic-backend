@@ -2,6 +2,7 @@ import csv
 import io
 import json
 import os
+import traceback
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
@@ -416,8 +417,19 @@ def get_survey(ma_bn: str, benh: str = "", doctor: Doctor = Depends(get_current_
     Truyền benh=aa/aga/nonscar để nhận thêm "mapped" — các trường đã ánh xạ sẵn sang
     đúng tên trường của bệnh án tương ứng. Luôn trả mã 200 kèm cờ found/loi thay vì
     ném lỗi, để hệ thống bệnh viện chậm hoặc mất mạng không chặn màn nhập bệnh án.
+
+    Bọc toàn bộ trong try/except là BẮT BUỘC: nếu để lỗi thoát ra ngoài, Starlette trả
+    500 KHÔNG kèm header CORS, trình duyệt chặn luôn và chỉ báo "Không kết nối được tới
+    backend" — che mất lỗi thật. Ở đây mọi lỗi đều thành thông báo đọc được trên màn hình.
     """
-    return survey.build_response(ma_bn, benh)
+    try:
+        return survey.build_response(ma_bn, benh)
+    except Exception as e:
+        return {
+            "found": False, "co_khao_sat": False, "khao_sat": None, "mapped": {}, "dlqi_tong": None,
+            "loi": f"Lỗi khi xử lý phiếu khảo sát: {type(e).__name__}: {e}",
+            "chan_doan": traceback.format_exc()[-1500:],
+        }
 
 
 @app.post("/patients")
