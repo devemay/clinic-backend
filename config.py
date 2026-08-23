@@ -33,10 +33,17 @@ USE_BACKUP_S3 = bool(BACKUP_AWS_ACCESS_KEY_ID and BACKUP_AWS_SECRET_ACCESS_KEY a
 # Đổi được bằng biến môi trường nếu bệnh viện chuyển địa chỉ hoặc đổi phòng khám.
 SURVEY_API_BASE = os.environ.get("SURVEY_API_BASE", "https://api.dalieu.vn")
 SURVEY_ROOM_ID = os.environ.get("SURVEY_ROOM_ID", "2283")
-try:
-    SURVEY_TIMEOUT = float(os.environ.get("SURVEY_TIMEOUT", "8"))
-except ValueError:
-    SURVEY_TIMEOUT = 8.0
+def _so_giay(ten, mac_dinh):
+    try:
+        return float(os.environ.get(ten, str(mac_dinh)))
+    except ValueError:
+        return float(mac_dinh)
+
+# timeout cho từng thao tác đọc/ghi socket
+SURVEY_TIMEOUT = _so_giay("SURVEY_TIMEOUT", 6)
+# hạn chót cứng cho TOÀN BỘ lần tra cứu (kể cả bước phân giải tên miền, thứ mà
+# timeout của urllib không bao được) — quá hạn thì bỏ và trả thông báo dễ hiểu
+SURVEY_DEADLINE = _so_giay("SURVEY_DEADLINE", 12)
 
 # ---------- auth ----------
 SECRET_KEY = os.environ.get("CLINIC_SECRET_KEY", "change-this-secret-in-production")

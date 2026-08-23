@@ -398,6 +398,17 @@ def get_patient(ma_bn: str, session: Session = Depends(get_session), doctor: Doc
 
 
 # ---------- phiếu khảo sát bệnh nhân tự điền trên hệ thống bệnh viện ----------
+# Khai báo TRƯỚC /survey/{ma_bn} — nếu đặt sau, "_ping" sẽ bị hiểu là một mã bệnh nhân.
+@app.get("/survey/_ping")
+def survey_ping():
+    """Kiểm tra máy chủ này có gọi ra được hệ thống bệnh viện hay không.
+
+    Không cần đăng nhập và KHÔNG trả về thông tin bệnh nhân nào (dùng mã không tồn tại),
+    để bác sĩ chỉ cần mở địa chỉ này trên trình duyệt là biết nút Đồng bộ có chạy được không.
+    """
+    return survey.ping()
+
+
 @app.get("/survey/{ma_bn}")
 def get_survey(ma_bn: str, benh: str = "", doctor: Doctor = Depends(get_current_doctor)):
     """Đọc phiếu khảo sát của bệnh nhân từ hệ thống bệnh viện (api.dalieu.vn).

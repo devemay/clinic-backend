@@ -11,6 +11,8 @@ tránh phải cài thêm gói trên Render.
 """
 
 import json
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -48,11 +50,11 @@ def _ma_bn_candidates(ma_bn: str) -> List[str]:
     return out
 
 
-def fetch_survey(ma_bn: str) -> Dict[str, Any]:
-    """Trả về {'found': bool, 'result': dict|None, 'loi': str|None}.
-    KHÔNG ném lỗi ra ngoài — API bệnh viện chậm/hỏng không được làm treo màn nhập bệnh án."""
+def _fetch_blocking(ma_bn: str, deadline: float) -> Dict[str, Any]:
     last_error = None
     for candidate in _ma_bn_candidates(ma_bn):
+        if time.monotonic() >= deadline:
+            break
         try:
             result = _call_api(candidate)
         except urllib.error.HTTPError as e:
@@ -60,11 +62,77 @@ def fetch_survey(ma_bn: str) -> Dict[str, Any]:
             continue
         except urllib.error.URLError as e:
             return {"found": False, "result": None, "loi": f"Không kết nối được hệ thống bệnh viện ({e.reason})"}
-        except Exception as e:  # timeout, JSON hỏng...
+        except Exception as e:  # timeout đọc dữ liệu, JSON hỏng...
             return {"found": False, "result": None, "loi": f"Không đọc được dữ liệu từ hệ thống bệnh viện ({e})"}
         if result:
             return {"found": True, "result": result, "loi": None}
     return {"found": False, "result": None, "loi": last_error or "Hệ thống bệnh viện không có hồ sơ với mã này"}
+
+
+def fetch_survey(ma_bn: str) -> Dict[str, Any]:
+    """Trả về {'found': bool, 'result': dict|None, 'loi': str|None}.
+
+    KHÔNG bao giờ ném lỗi và KHÔNG bao giờ chạy quá `SURVEY_DEADLINE` giây.
+
+    Vì sao cần hạn chót cứng chứ không chỉ dựa vào timeout của urllib: tham số `timeout`
+    của urlopen chỉ tính cho từng thao tác đọc/ghi socket, KHÔNG tính bước phân giải tên
+    miền (DNS). Nếu máy chủ không phân giải hoặc không ra được api.dalieu.vn, lời gọi sẽ
+    treo vô hạn -> Render cắt kết nối bằng lỗi 502 KHÔNG kèm header CORS -> trình duyệt
+    báo "Không kết nối được tới backend", tưởng nhầm là server sập.
+    Ở đây chạy lời gọi trong một luồng phụ và bỏ luồng đó nếu quá hạn, để endpoint luôn
+    trả về HTTP 200 kèm thông báo tiếng Việt dễ hiểu.
+    """
+    box: Dict[str, Any] = {}
+    deadline = time.monotonic() + config.SURVEY_DEADLINE
+
+    def worker():
+        try:
+            box["res"] = _fetch_blocking(ma_bn, deadline)
+        except Exception as e:
+            box["res"] = {"found": False, "result": None, "loi": f"Lỗi khi gọi hệ thống bệnh viện ({e})"}
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    t.join(config.SURVEY_DEADLINE)
+    if "res" not in box:
+        return {"found": False, "result": None, "loi": (
+            f"Hệ thống bệnh viện không phản hồi sau {int(config.SURVEY_DEADLINE)} giây. "
+            "Có thể máy chủ đặt ở nước ngoài (Render) không gọi ra được api.dalieu.vn. "
+            "Mở /survey/_ping trên trình duyệt để kiểm tra, hoặc nhập tay và thử lại sau."
+        )}
+    return box["res"]
+
+
+def ping() -> Dict[str, Any]:
+    """Kiểm tra máy chủ có gọi ra được hệ thống bệnh viện không.
+    Dùng mã bệnh nhân không tồn tại nên KHÔNG trả về bất kỳ thông tin bệnh nhân nào."""
+    out: Dict[str, Any] = {"dia_chi": config.SURVEY_API_BASE, "phong": config.SURVEY_ROOM_ID,
+                           "gioi_han_giay": config.SURVEY_DEADLINE}
+    box: Dict[str, Any] = {}
+    t0 = time.monotonic()
+
+    def worker():
+        try:
+            _call_api("0000000000")
+            box["ket_qua"] = {"goi_duoc": True, "loi": None}
+        except urllib.error.HTTPError as e:
+            box["ket_qua"] = {"goi_duoc": True, "loi": f"HTTP {e.code} (vẫn kết nối được)"}
+        except Exception as e:
+            box["ket_qua"] = {"goi_duoc": False, "loi": f"{type(e).__name__}: {e}"}
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    t.join(config.SURVEY_DEADLINE)
+    out["mili_giay"] = int((time.monotonic() - t0) * 1000)
+    if "ket_qua" not in box:
+        out.update({"goi_duoc": False,
+                    "loi": f"Treo quá {int(config.SURVEY_DEADLINE)} giây — máy chủ này không ra được api.dalieu.vn"})
+    else:
+        out.update(box["ket_qua"])
+    out["ket_luan"] = ("Máy chủ gọi được hệ thống bệnh viện — nút Đồng bộ sẽ chạy."
+                       if out["goi_duoc"] else
+                       "Máy chủ KHÔNG gọi được hệ thống bệnh viện — nút Đồng bộ sẽ báo lỗi.")
+    return out
 
 
 # ---------- 2. Công cụ đọc giá trị trong phiếu ----------
