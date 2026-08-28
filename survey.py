@@ -662,11 +662,72 @@ def map_nonscar(a: dict, result: dict) -> Dict[str, Any]:
     return out
 
 
-# Thêm bệnh thứ 4: chỉ cần thêm 1 dòng vào đây (khớp key với DISEASE_CONFIGS trong main.py).
+def map_sa(a: dict, result: dict) -> Dict[str, Any]:
+    """Rụng tóc sẹo. Bộ câu hỏi hiện tại của bệnh viện chưa hỏi riêng cho bệnh này —
+    chỉ ánh xạ được phần dùng chung. Sẽ mở rộng khi phiếu khảo sát mới được dựng."""
+    out: Dict[str, Any] = {}
+    ngay_kham = _txt(result.get("treatmentDate"))[:10]
+    if ngay_kham:
+        out["ngayKham"] = ngay_kham
+    onset = _onset_text(a)
+    if onset:
+        out["thoiGianMacBenh"] = onset
+    history = build_history_text(a)
+    if history:
+        out["benhSuTruoc"] = history
+
+    co_nang = []
+    if _is_yes(a, "scalp_itch"):
+        co_nang.append("Ngứa")
+    if _is_yes(a, "scalp_pain"):
+        co_nang.append("Đau")
+    if co_nang:
+        out["trieuChungCoNang"] = co_nang
+    elif all(_yn(a.get(k)) == "Không" for k in ("scalp_itch", "scalp_pain")):
+        out["trieuChungCoNang"] = ["Không triệu chứng"]
+
+    # LPPAI: mức độ ngứa/đau bệnh nhân tự chấm (thang 0-10) nếu phiếu có hỏi
+    for field, key in (("lppai.ngua", "scalp_itch_scale"), ("lppai.dau", "scalp_pain_scale")):
+        v = _num(a.get(key))
+        if v is not None:
+            out[field] = v
+
+    for row, keys, detail_key in (
+        ("Viêm da cơ địa / Vảy nến", ("mh_psoriasis",), None),
+        ("Bỏng / chấn thương da đầu / tia xạ vùng đầu", ("pre_majorSurgery",), None),
+    ):
+        status = _yn_or_none(a, *keys)
+        if status:
+            out[f"tienSuBanThan.{row}.status"] = status
+    return out
+
+
+def map_ttm(a: dict, result: dict) -> Dict[str, Any]:
+    """Tật nhổ tóc. Phiếu hiện tại chưa có phần hành vi nhổ tóc — chỉ ánh xạ phần dùng chung."""
+    out = _map_common(a, result)
+    onset = _onset_text(a)
+    if onset:
+        out["thoiGianMacBenh"] = onset
+    for row, keys, detail_key in (
+        ("Tiền sử dị ứng thuốc / thức ăn", ("drugAllergy",), "drugAllergy_list"),
+        ("Bệnh lý tâm thần (lo âu, trầm cảm, OCD, ADHD...)", ("mh_anxiety", "mh_depression"), None),
+    ):
+        status = _yn_or_none(a, *keys)
+        if status:
+            out[f"tienSuBanThan.{row}.status"] = status
+            detail = _txt(a.get(detail_key)) if detail_key else ""
+            if detail:
+                out[f"tienSuBanThan.{row}.detail"] = detail
+    return out
+
+
+# Thêm bệnh mới: chỉ cần thêm 1 dòng vào đây (khớp key với DISEASE_CONFIGS trong main.py).
 SURVEY_MAPPERS = {
     "aa": map_aa,
     "aga": map_aga,
     "nonscar": map_nonscar,
+    "sa": map_sa,
+    "ttm": map_ttm,
 }
 
 

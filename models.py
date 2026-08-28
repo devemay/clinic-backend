@@ -101,3 +101,53 @@ class NonScarFollowUp(SQLModel, table=True):
     muc_do_nang: Optional[str] = Field(default=None, max_length=32, index=True)
     dieu_tri: Optional[str] = Field(default=None, max_length=255, index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class SACase(SQLModel, table=True):
+    """Rụng tóc sẹo (Scarring alopecia) — mã lưu trữ SA260815001"""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    ma_luu_tru: str = Field(index=True, unique=True, max_length=32)
+    ma_bn: str = Field(foreign_key="patient.ma_bn", index=True, max_length=64, unique=True)
+    ngay_tao: date = Field(default_factory=date.today, index=True)
+    bac_si_tao: Optional[str] = Field(default=None, max_length=64)
+    da_dien_du_lieu: bool = Field(default=False)
+    benh_an_moi: str = Field(default="{}", sa_column=Column(Text))
+    muc_do_nang: Optional[str] = Field(default=None, max_length=32, index=True)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class SAFollowUp(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    case_id: int = Field(foreign_key="sacase.id", index=True)
+    ngay_kham: Optional[date] = Field(default=None, index=True)
+    bac_si_tao: Optional[str] = Field(default=None, max_length=64)
+    da_dien_du_lieu: bool = Field(default=False)
+    data: str = Field(default="{}", sa_column=Column(Text))
+    muc_do_nang: Optional[str] = Field(default=None, max_length=32, index=True)
+    dieu_tri: Optional[str] = Field(default=None, max_length=255, index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class TTMCase(SQLModel, table=True):
+    """Tật nhổ tóc (Trichotillomania) — mã lưu trữ TTM260815001"""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    ma_luu_tru: str = Field(index=True, unique=True, max_length=32)
+    ma_bn: str = Field(foreign_key="patient.ma_bn", index=True, max_length=64, unique=True)
+    ngay_tao: date = Field(default_factory=date.today, index=True)
+    bac_si_tao: Optional[str] = Field(default=None, max_length=64)
+    da_dien_du_lieu: bool = Field(default=False)
+    benh_an_moi: str = Field(default="{}", sa_column=Column(Text))
+    muc_do_nang: Optional[str] = Field(default=None, max_length=32, index=True)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class TTMFollowUp(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    case_id: int = Field(foreign_key="ttmcase.id", index=True)
+    ngay_kham: Optional[date] = Field(default=None, index=True)
+    bac_si_tao: Optional[str] = Field(default=None, max_length=64)
+    da_dien_du_lieu: bool = Field(default=False)
+    data: str = Field(default="{}", sa_column=Column(Text))
+    muc_do_nang: Optional[str] = Field(default=None, max_length=32, index=True)
+    dieu_tri: Optional[str] = Field(default=None, max_length=255, index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
