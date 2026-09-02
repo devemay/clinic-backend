@@ -717,8 +717,24 @@ def delete_patient(ma_bn: str, session: Session = Depends(get_session), doctor: 
     return {"ok": True}
 
 
+# Cùng một bệnh có thể được gọi bằng nhiều tên qua các phiên bản: khoá kỹ thuật ("nonscar"),
+# nhãn cũ ("NONSCAR"), tiền tố mã lưu trữ ("NS") hay ký hiệu mới ("NSA"). Chuẩn hoá hết về
+# nhãn hiện hành để bản frontend cũ còn trong bộ nhớ đệm trình duyệt vẫn dùng được bình thường.
+_TEN_KHAC = {"NONSCAR": "NSA", "NS": "NSA", "NSA": "NSA"}
+
+
+def chuan_hoa_nhan_benh(benh):
+    if not benh:
+        return benh
+    t = str(benh).strip().upper()
+    if t in _TEN_KHAC:
+        return _TEN_KHAC[t]
+    return next((c["label"] for c in DISEASE_CONFIGS if c["label"].upper() == t or c["key"].upper() == t), benh)
+
+
 def _find_disease_config(benh: str):
-    cfg = next((c for c in DISEASE_CONFIGS if c["key"] == benh.lower()), None)
+    khoa = {"nsa": "nonscar", "ns": "nonscar", "nonscar": "nonscar"}.get(str(benh).lower(), str(benh).lower())
+    cfg = next((c for c in DISEASE_CONFIGS if c["key"] == khoa), None)
     if not cfg:
         raise HTTPException(status_code=404, detail=f"Không rõ loại bệnh '{benh}'")
     return cfg
@@ -1361,6 +1377,16 @@ def save_ttm_followup_data(
     return {"ok": True}
 
 
+# ---------- địa chỉ thay thế: "nsa" trỏ về đúng các hàm của "nonscar" ----------
+# Bản frontend cũ suy ra đường dẫn từ nhãn hiển thị nên gửi "nsa". Mở thêm lối vào này để
+# máy nào còn giữ bản cũ trong bộ nhớ đệm vẫn dùng được, không phải chờ xoá cache.
+app.add_api_route("/cases/{ma_bn}/nsa/create", create_nonscar_case, methods=["POST"], include_in_schema=False)
+app.add_api_route("/cases/{ma_bn}/nsa", get_nonscar_case, methods=["GET"], include_in_schema=False)
+app.add_api_route("/cases/{ma_bn}/nsa", save_nonscar_case_data, methods=["PUT"], include_in_schema=False)
+app.add_api_route("/cases/{ma_bn}/nsa/followups/create", create_nonscar_followup, methods=["POST"], include_in_schema=False)
+app.add_api_route("/cases/{ma_bn}/nsa/followups/{followup_id}", save_nonscar_followup_data, methods=["PUT"], include_in_schema=False)
+
+
 # ---------- dashboard ----------
 @app.get("/dashboard/today")
 def dashboard_today(session: Session = Depends(get_session), doctor: Doctor = Depends(get_current_doctor)):
@@ -1475,6 +1501,7 @@ def search_cases(
     session: Session = Depends(get_session),
     doctor: Doctor = Depends(get_current_doctor),
 ):
+    benh = chuan_hoa_nhan_benh(benh)
     configs = [c for c in DISEASE_CONFIGS if not benh or c["label"] == benh]
     results = []
 
@@ -1602,6 +1629,7 @@ def recent_cases(limit: int = 8, session: Session = Depends(get_session), doctor
 def export_raw(benh: Optional[str] = None, session: Session = Depends(get_session), doctor: Doctor = Depends(require_export_permission)):
     """Trả về toàn bộ dữ liệu của cả 3 bệnh (mọi bệnh nhân) dạng JSON đầy đủ — dùng để dựng file Excel phía trình duyệt.
     Truyền benh=AA/AGA/NSA/SA/TTM để chỉ lấy đúng 1 bệnh."""
+    benh = chuan_hoa_nhan_benh(benh)
     out = []
     for cfg in DISEASE_CONFIGS:
         if benh and cfg["label"] != benh:
