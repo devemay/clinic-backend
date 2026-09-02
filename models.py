@@ -39,6 +39,15 @@ class AACase(SQLModel, table=True):
     benh_an_moi: str = Field(default="{}", sa_column=Column(Text))
     # cột trích riêng để tra cứu/lọc nhanh, không phải mở JSON mỗi lần
     muc_do_nang: Optional[str] = Field(default=None, max_length=32, index=True)
+    # Cột trích sẵn từ JSON để lọc/sắp xếp bằng SQL (không phải mở JSON từng bản ghi):
+    #   dong_mac        "" = không có bệnh đồng mắc, hoặc "AGA,SA" — thuộc về BỆNH ÁN nên
+    #                   áp dụng cho mọi lần khám của bệnh nhân đó
+    #   gpb_trang_thai  "" = không chỉ định GPB | "cho" = đang chờ kết quả | "co" = đã có kết quả
+    #   gpb_cho_tu      ngày thực hiện, chỉ có giá trị khi đang chờ — dùng để sắp xếp và tính số ngày chờ
+    # NULL = chưa được nạp giá trị (chỉ xảy ra trước khi chạy backfill_cot_phu lúc khởi động)
+    dong_mac: Optional[str] = Field(default=None, max_length=64, index=True)
+    gpb_trang_thai: Optional[str] = Field(default=None, max_length=8, index=True)
+    gpb_cho_tu: Optional[date] = Field(default=None, index=True)
     the_lam_sang: Optional[str] = Field(default=None, max_length=64)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -51,6 +60,8 @@ class AAFollowUp(SQLModel, table=True):
     da_dien_du_lieu: bool = Field(default=False)
     data: str = Field(default="{}", sa_column=Column(Text))
     muc_do_nang: Optional[str] = Field(default=None, max_length=32, index=True)
+    gpb_trang_thai: Optional[str] = Field(default=None, max_length=8, index=True)
+    gpb_cho_tu: Optional[date] = Field(default=None, index=True)
     dieu_tri: Optional[str] = Field(default=None, max_length=255, index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -64,6 +75,15 @@ class AGACase(SQLModel, table=True):
     da_dien_du_lieu: bool = Field(default=False)
     benh_an_moi: str = Field(default="{}", sa_column=Column(Text))
     muc_do_nang: Optional[str] = Field(default=None, max_length=32, index=True)
+    # Cột trích sẵn từ JSON để lọc/sắp xếp bằng SQL (không phải mở JSON từng bản ghi):
+    #   dong_mac        "" = không có bệnh đồng mắc, hoặc "AGA,SA" — thuộc về BỆNH ÁN nên
+    #                   áp dụng cho mọi lần khám của bệnh nhân đó
+    #   gpb_trang_thai  "" = không chỉ định GPB | "cho" = đang chờ kết quả | "co" = đã có kết quả
+    #   gpb_cho_tu      ngày thực hiện, chỉ có giá trị khi đang chờ — dùng để sắp xếp và tính số ngày chờ
+    # NULL = chưa được nạp giá trị (chỉ xảy ra trước khi chạy backfill_cot_phu lúc khởi động)
+    dong_mac: Optional[str] = Field(default=None, max_length=64, index=True)
+    gpb_trang_thai: Optional[str] = Field(default=None, max_length=8, index=True)
+    gpb_cho_tu: Optional[date] = Field(default=None, index=True)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -75,6 +95,8 @@ class AGAFollowUp(SQLModel, table=True):
     da_dien_du_lieu: bool = Field(default=False)
     data: str = Field(default="{}", sa_column=Column(Text))
     muc_do_nang: Optional[str] = Field(default=None, max_length=32, index=True)
+    gpb_trang_thai: Optional[str] = Field(default=None, max_length=8, index=True)
+    gpb_cho_tu: Optional[date] = Field(default=None, index=True)
     dieu_tri: Optional[str] = Field(default=None, max_length=255, index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -88,6 +110,15 @@ class NonScarCase(SQLModel, table=True):
     da_dien_du_lieu: bool = Field(default=False)
     benh_an_moi: str = Field(default="{}", sa_column=Column(Text))
     muc_do_nang: Optional[str] = Field(default=None, max_length=32, index=True)
+    # Cột trích sẵn từ JSON để lọc/sắp xếp bằng SQL (không phải mở JSON từng bản ghi):
+    #   dong_mac        "" = không có bệnh đồng mắc, hoặc "AGA,SA" — thuộc về BỆNH ÁN nên
+    #                   áp dụng cho mọi lần khám của bệnh nhân đó
+    #   gpb_trang_thai  "" = không chỉ định GPB | "cho" = đang chờ kết quả | "co" = đã có kết quả
+    #   gpb_cho_tu      ngày thực hiện, chỉ có giá trị khi đang chờ — dùng để sắp xếp và tính số ngày chờ
+    # NULL = chưa được nạp giá trị (chỉ xảy ra trước khi chạy backfill_cot_phu lúc khởi động)
+    dong_mac: Optional[str] = Field(default=None, max_length=64, index=True)
+    gpb_trang_thai: Optional[str] = Field(default=None, max_length=8, index=True)
+    gpb_cho_tu: Optional[date] = Field(default=None, index=True)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -99,6 +130,8 @@ class NonScarFollowUp(SQLModel, table=True):
     da_dien_du_lieu: bool = Field(default=False)
     data: str = Field(default="{}", sa_column=Column(Text))
     muc_do_nang: Optional[str] = Field(default=None, max_length=32, index=True)
+    gpb_trang_thai: Optional[str] = Field(default=None, max_length=8, index=True)
+    gpb_cho_tu: Optional[date] = Field(default=None, index=True)
     dieu_tri: Optional[str] = Field(default=None, max_length=255, index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -113,6 +146,15 @@ class SACase(SQLModel, table=True):
     da_dien_du_lieu: bool = Field(default=False)
     benh_an_moi: str = Field(default="{}", sa_column=Column(Text))
     muc_do_nang: Optional[str] = Field(default=None, max_length=32, index=True)
+    # Cột trích sẵn từ JSON để lọc/sắp xếp bằng SQL (không phải mở JSON từng bản ghi):
+    #   dong_mac        "" = không có bệnh đồng mắc, hoặc "AGA,SA" — thuộc về BỆNH ÁN nên
+    #                   áp dụng cho mọi lần khám của bệnh nhân đó
+    #   gpb_trang_thai  "" = không chỉ định GPB | "cho" = đang chờ kết quả | "co" = đã có kết quả
+    #   gpb_cho_tu      ngày thực hiện, chỉ có giá trị khi đang chờ — dùng để sắp xếp và tính số ngày chờ
+    # NULL = chưa được nạp giá trị (chỉ xảy ra trước khi chạy backfill_cot_phu lúc khởi động)
+    dong_mac: Optional[str] = Field(default=None, max_length=64, index=True)
+    gpb_trang_thai: Optional[str] = Field(default=None, max_length=8, index=True)
+    gpb_cho_tu: Optional[date] = Field(default=None, index=True)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -124,6 +166,8 @@ class SAFollowUp(SQLModel, table=True):
     da_dien_du_lieu: bool = Field(default=False)
     data: str = Field(default="{}", sa_column=Column(Text))
     muc_do_nang: Optional[str] = Field(default=None, max_length=32, index=True)
+    gpb_trang_thai: Optional[str] = Field(default=None, max_length=8, index=True)
+    gpb_cho_tu: Optional[date] = Field(default=None, index=True)
     dieu_tri: Optional[str] = Field(default=None, max_length=255, index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -138,6 +182,15 @@ class TTMCase(SQLModel, table=True):
     da_dien_du_lieu: bool = Field(default=False)
     benh_an_moi: str = Field(default="{}", sa_column=Column(Text))
     muc_do_nang: Optional[str] = Field(default=None, max_length=32, index=True)
+    # Cột trích sẵn từ JSON để lọc/sắp xếp bằng SQL (không phải mở JSON từng bản ghi):
+    #   dong_mac        "" = không có bệnh đồng mắc, hoặc "AGA,SA" — thuộc về BỆNH ÁN nên
+    #                   áp dụng cho mọi lần khám của bệnh nhân đó
+    #   gpb_trang_thai  "" = không chỉ định GPB | "cho" = đang chờ kết quả | "co" = đã có kết quả
+    #   gpb_cho_tu      ngày thực hiện, chỉ có giá trị khi đang chờ — dùng để sắp xếp và tính số ngày chờ
+    # NULL = chưa được nạp giá trị (chỉ xảy ra trước khi chạy backfill_cot_phu lúc khởi động)
+    dong_mac: Optional[str] = Field(default=None, max_length=64, index=True)
+    gpb_trang_thai: Optional[str] = Field(default=None, max_length=8, index=True)
+    gpb_cho_tu: Optional[date] = Field(default=None, index=True)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -149,5 +202,7 @@ class TTMFollowUp(SQLModel, table=True):
     da_dien_du_lieu: bool = Field(default=False)
     data: str = Field(default="{}", sa_column=Column(Text))
     muc_do_nang: Optional[str] = Field(default=None, max_length=32, index=True)
+    gpb_trang_thai: Optional[str] = Field(default=None, max_length=8, index=True)
+    gpb_cho_tu: Optional[date] = Field(default=None, index=True)
     dieu_tri: Optional[str] = Field(default=None, max_length=255, index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
