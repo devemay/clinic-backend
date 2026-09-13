@@ -19,11 +19,13 @@ else:
 
 # Các cột được thêm vào SAU KHI hệ thống đã có dữ liệu thật — create_all() không tự thêm cột
 # vào bảng đã tồn tại, nên cần tự kiểm tra & ALTER TABLE thủ công tại đây (không đụng dữ liệu cũ).
-_COT_BENH_AN = [("dong_mac", "VARCHAR(64)"), ("gpb_trang_thai", "VARCHAR(8)"), ("gpb_cho_tu", "DATE")]
-_COT_TAI_KHAM = [("gpb_trang_thai", "VARCHAR(8)"), ("gpb_cho_tu", "DATE")]
+_COT_BENH_AN = [("dong_mac", "VARCHAR(64)"), ("gpb_trang_thai", "VARCHAR(8)"), ("gpb_cho_tu", "DATE"), ("luu_y", "VARCHAR(500)")]
+_COT_TAI_KHAM = [("gpb_trang_thai", "VARCHAR(8)"), ("gpb_cho_tu", "DATE"), ("luu_y", "VARCHAR(500)")]
 
 NEW_COLUMNS = {
-    "doctor": [("is_admin", "BOOLEAN DEFAULT 0")],
+    # can_delete CỐ Ý không đặt DEFAULT: tài khoản cũ nhận NULL để backfill_quyen_xoa() nhận ra
+    # "chưa nạp" và gán bằng can_export. Nếu đặt DEFAULT 0 thì mọi tài khoản cũ mất quyền xoá.
+    "doctor": [("is_admin", "BOOLEAN DEFAULT 0"), ("can_delete", "BOOLEAN")],
     "patient": [("dan_toc", "VARCHAR(64)"), ("ngay_sinh", "DATE")],
     # Cột trích sẵn từ JSON, thêm sau khi hệ thống đã có dữ liệu thật.
     # Để mặc định NULL (không đặt DEFAULT) để phân biệt "chưa nạp giá trị" với "đã nạp, giá trị rỗng"

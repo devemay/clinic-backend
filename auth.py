@@ -89,6 +89,17 @@ def require_export_permission(doctor: Doctor = Depends(get_current_doctor)) -> D
     return doctor
 
 
+def require_delete_permission(doctor: Doctor = Depends(get_current_doctor)) -> Doctor:
+    """Xoá bệnh án là thao tác không lấy lại được, nên tách thành quyền riêng thay vì
+    dùng chung quyền xuất dữ liệu như trước."""
+    if not doctor.can_delete:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Tài khoản này chưa được cấp quyền xoá bệnh án",
+        )
+    return doctor
+
+
 def require_admin(doctor: Doctor = Depends(get_current_doctor)) -> Doctor:
     if not doctor.is_admin:
         raise HTTPException(

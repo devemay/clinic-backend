@@ -14,7 +14,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from auth import authenticate_doctor, create_access_token, get_current_doctor, require_export_permission, require_create_permission, require_admin, hash_password, verify_password
+from auth import authenticate_doctor, create_access_token, get_current_doctor, require_export_permission, require_delete_permission, require_create_permission, require_admin, hash_password, verify_password
 from database import get_session, init_db
 from models import (AACase, AAFollowUp, AGACase, AGAFollowUp, NonScarCase, NonScarFollowUp,
                     SACase, SAFollowUp, TTMCase, TTMFollowUp, Doctor, Patient)
@@ -42,6 +42,67 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 @app.get("/health")
 def health():
     return "ok"
+
+
+def backfill_quyen_xoa() -> None:
+    """Trước bản này, quyền xoá bệnh án dùng chung với quyền xuất dữ liệu. Nay tách riêng.
+    Nạp can_delete = can_export cho các tài khoản đã có để không ai đột ngột mất quyền;
+    admin sau đó tự bỏ tích cho ai không cần. Chỉ chạy 1 lần (chỉ đụng bản ghi còn NULL)."""
+    from database import engine as _engine
+    from sqlalchemy import text as _text
+    with _engine.connect() as conn:
+        try:
+            n = conn.execute(_text("UPDATE doctor SET can_delete = can_export WHERE can_delete IS NULL")).rowcount
+            # phòng trường hợp can_export cũng NULL -> không để cột mới còn NULL
+            conn.execute(_text("UPDATE doctor SET can_delete = 0 WHERE can_delete IS NULL"))
+            conn.commit()
+            if n:
+                print(f"[khởi động] Đã đặt quyền xoá bệnh án cho {n} tài khoản (bằng quyền xuất dữ liệu cũ).")
+        except Exception as e:
+            print("[khởi động] Bỏ qua nạp quyền xoá:", e)
+
+
+def doi_ten_thuoc_cu() -> None:
+    """Neutasol đã đổi tên thành Clobetasol. Cập nhật các bệnh án cũ để thống kê không bị
+    tách làm 2 tên. Chạy trên cả trường chọn thuốc lẫn chuỗi tóm tắt dieuTri."""
+    from database import engine as _engine
+    from sqlalchemy import text as _text
+    doi = 0
+    with _engine.connect() as conn:
+        for cfg in DISEASE_CONFIGS:
+            for bang, cot in ((cfg["case_model"].__tablename__, "benh_an_moi"),
+                              (cfg["followup_model"].__tablename__, "data")):
+                try:
+                    rows = conn.execute(_text(
+                        f"SELECT id, {cot} FROM {bang} WHERE {cot} LIKE '%Neutasol%'")).fetchall()
+                except Exception:
+                    continue
+                for _id, txt in rows:
+                    conn.execute(_text(f"UPDATE {bang} SET {cot} = :v WHERE id = :i")
+                                 .bindparams(v=str(txt).replace("Neutasol", "Clobetasol"), i=_id))
+                    doi += 1
+                if rows:
+                    conn.commit()
+    if doi:
+        print(f"[khởi động] Đã đổi Neutasol -> Clobetasol trong {doi} bản ghi.")
+
+
+def doi_ky_hieu_dong_mac() -> None:
+    """Ký hiệu bệnh rụng tóc không sẹo đổi từ NSA sang TE — cập nhật cột đồng mắc đã lưu."""
+    from database import engine as _engine
+    from sqlalchemy import text as _text
+    with _engine.connect() as conn:
+        for cfg in DISEASE_CONFIGS:
+            bang = cfg["case_model"].__tablename__
+            try:
+                n = conn.execute(_text(
+                    f"UPDATE {bang} SET dong_mac = REPLACE(dong_mac, 'NSA', 'TE') "
+                    f"WHERE dong_mac LIKE '%NSA%'")).rowcount
+                if n:
+                    conn.commit()
+                    print(f"[khởi động] Đổi ký hiệu đồng mắc NSA -> TE: {n} bản ghi ({bang}).")
+            except Exception:
+                pass
 
 
 def backfill_cot_phu() -> None:
@@ -91,6 +152,9 @@ def backfill_cot_phu() -> None:
 @app.on_event("startup")
 def on_startup():
     init_db()
+    backfill_quyen_xoa()
+    doi_ten_thuoc_cu()
+    doi_ky_hieu_dong_mac()
     backfill_cot_phu()
 
 
@@ -102,6 +166,7 @@ class Token(BaseModel):
     role: str
     can_create: bool
     can_export: bool
+    can_delete: bool
     is_admin: bool
 
 
@@ -238,7 +303,7 @@ def refresh_images(data: dict) -> dict:
     return d
 
 
-BENH_HOP_LE = ("AA", "AGA", "NSA", "SA", "TTM")
+BENH_HOP_LE = ("AA", "AGA", "TE", "SA", "TTM")
 
 
 def cap_nhat_cot_gpb(ban_ghi, data: dict) -> None:
@@ -252,6 +317,38 @@ def cap_nhat_cot_gpb(ban_ghi, data: dict) -> None:
     else:
         ban_ghi.gpb_trang_thai = "cho"
         ban_ghi.gpb_cho_tu = parse_date(data.get("gpbNgayThucHien"))
+
+
+def cap_nhat_cot_luu_y(ban_ghi, data: dict) -> None:
+    """Trích lưu ý cho lần khám sau ra cột riêng, để danh sách và tra cứu lọc bằng SQL."""
+    if (data or {}).get("luuYSau") == "Có":
+        ban_ghi.luu_y = (str(data.get("luuYNoiDung") or "").strip() or "Có lưu ý")[:500]
+    else:
+        ban_ghi.luu_y = ""
+
+
+def gom_luu_y_dang_mo(session: Session, CaseModel, FUModel, case_id):
+    """Lấy toàn bộ lưu ý chưa xử lý của 1 bệnh án (ở phiếu khám đầu và các lần tái khám)."""
+    ds = []
+    case = session.get(CaseModel, case_id)
+    if case is not None and (case.luu_y or "").strip():
+        ds.append(case.luu_y.strip())
+    for f in session.exec(select(FUModel).where(FUModel.case_id == case_id)).all():
+        if (f.luu_y or "").strip():
+            ds.append(f.luu_y.strip())
+    return ds
+
+
+def tat_luu_y(session: Session, CaseModel, FUModel, case_id) -> None:
+    """Lần khám tiếp theo đã được tạo -> lưu ý coi như đã chuyển giao, tắt dấu Chú ý."""
+    case = session.get(CaseModel, case_id)
+    if case is not None and (case.luu_y or "").strip():
+        case.luu_y = ""
+        session.add(case)
+    for f in session.exec(select(FUModel).where(FUModel.case_id == case_id)).all():
+        if (f.luu_y or "").strip():
+            f.luu_y = ""
+            session.add(f)
 
 
 def chuoi_dong_mac(data: dict) -> str:
@@ -352,6 +449,7 @@ NEW_CASE_SECTIONS = {
     "Điều trị & thủ thuật": ["dieuTri", "vas", "tdkm", "henKham"],
     "Hình ảnh": ["anh"],
     "Tình trạng đồng mắc": ["dongMac"],
+    "Lưu ý lần khám sau": ["luuYSau"],
 }
 FOLLOWUP_SECTIONS = {
     "Lâm sàng": ["ngayKham", "bacSiKham", "lamSang", "pullTest", "tocToMoc", "mucDoSoVoiTruoc", "tacDungPhuStatus"],
@@ -361,6 +459,7 @@ FOLLOWUP_SECTIONS = {
     "Giải phẫu bệnh": ["gpbCo"],
     "Hình ảnh": ["anh"],
     "Tình trạng đồng mắc": ["dongMac"],
+    "Lưu ý lần khám sau": ["luuYSau"],
 }
 
 NEW_AGA_CASE_SECTIONS = {
@@ -374,6 +473,7 @@ NEW_AGA_CASE_SECTIONS = {
     "Điều trị & thủ thuật": ["dieuTri", "henKham"],
     "Hình ảnh": ["anh"],
     "Tình trạng đồng mắc": ["dongMac"],
+    "Lưu ý lần khám sau": ["luuYSau"],
 }
 FOLLOWUP_AGA_SECTIONS = {
     "Lâm sàng": ["ngayKham", "bacSiKham", "lamSang", "pullTest", "mucDoSoVoiTruoc"],
@@ -383,6 +483,7 @@ FOLLOWUP_AGA_SECTIONS = {
     "Điều trị": ["dieuTri"],
     "Hình ảnh": ["anh"],
     "Tình trạng đồng mắc": ["dongMac"],
+    "Lưu ý lần khám sau": ["luuYSau"],
 }
 
 NEW_NONSCAR_CASE_SECTIONS = {
@@ -395,6 +496,7 @@ NEW_NONSCAR_CASE_SECTIONS = {
     "Điều trị & thủ thuật": ["dieuTri", "henKham"],
     "Hình ảnh": ["anh"],
     "Tình trạng đồng mắc": ["dongMac"],
+    "Lưu ý lần khám sau": ["luuYSau"],
 }
 FOLLOWUP_NONSCAR_SECTIONS = {
     "Lâm sàng": ["ngayKham", "bacSiKham", "lamSang", "pullTest", "mucDoSoVoiTruoc"],
@@ -402,6 +504,7 @@ FOLLOWUP_NONSCAR_SECTIONS = {
     "Xét nghiệm & Điều trị": ["xnStatus", "dieuTri"],
     "Hình ảnh": ["anh"],
     "Tình trạng đồng mắc": ["dongMac"],
+    "Lưu ý lần khám sau": ["luuYSau"],
 }
 
 
@@ -421,6 +524,7 @@ NEW_SA_CASE_SECTIONS = {
     "Điều trị & thủ thuật": ["dieuTri", "henKham"],
     "Hình ảnh": ["anh"],
     "Tình trạng đồng mắc": ["dongMac"],
+    "Lưu ý lần khám sau": ["luuYSau"],
 }
 FOLLOWUP_SA_SECTIONS = {
     "Lâm sàng": ["ngayKham", "bacSiKham", "lamSang", "pullTest", "dienTichPhanTram",
@@ -433,6 +537,7 @@ FOLLOWUP_SA_SECTIONS = {
     "Điều trị": ["dieuTri"],
     "Hình ảnh": ["anh"],
     "Tình trạng đồng mắc": ["dongMac"],
+    "Lưu ý lần khám sau": ["luuYSau"],
 }
 
 # ---------- Tật nhổ tóc (TTM) ----------
@@ -452,6 +557,7 @@ NEW_TTM_CASE_SECTIONS = {
     "Điều trị & thủ thuật": ["hrt", "dieuTri", "henKham"],
     "Hình ảnh": ["anh"],
     "Tình trạng đồng mắc": ["dongMac"],
+    "Lưu ý lần khám sau": ["luuYSau"],
 }
 FOLLOWUP_TTM_SECTIONS = {
     "Lâm sàng": ["ngayKham", "bacSiKham", "soVoiLanTruoc", "nhoTocGiua2Lan", "tuanThuDieuTri",
@@ -462,6 +568,7 @@ FOLLOWUP_TTM_SECTIONS = {
     "Giải phẫu bệnh": ["gpbCo"],
     "Hình ảnh": ["anh"],
     "Tình trạng đồng mắc": ["dongMac"],
+    "Lưu ý lần khám sau": ["luuYSau"],
 }
 
 
@@ -481,7 +588,7 @@ def parse_date(value) -> Optional[date]:
 DISEASE_CONFIGS = [
     {"key": "aa", "label": "AA", "case_model": AACase, "followup_model": AAFollowUp},
     {"key": "aga", "label": "AGA", "case_model": AGACase, "followup_model": AGAFollowUp},
-    {"key": "nonscar", "label": "NSA", "case_model": NonScarCase, "followup_model": NonScarFollowUp},
+    {"key": "nonscar", "label": "TE", "case_model": NonScarCase, "followup_model": NonScarFollowUp},
     {"key": "sa", "label": "SA", "case_model": SACase, "followup_model": SAFollowUp},
     {"key": "ttm", "label": "TTM", "case_model": TTMCase, "followup_model": TTMFollowUp},
 ]
@@ -509,12 +616,12 @@ def login(form: OAuth2PasswordRequestForm = Depends(), session: Session = Depend
     if not doctor:
         raise HTTPException(status_code=401, detail="Sai tên đăng nhập hoặc mật khẩu")
     token = create_access_token(doctor.username)
-    return Token(access_token=token, display_name=doctor.display_name, role=doctor.role, can_create=doctor.can_create, can_export=doctor.can_export, is_admin=doctor.is_admin)
+    return Token(access_token=token, display_name=doctor.display_name, role=doctor.role, can_create=doctor.can_create, can_export=doctor.can_export, can_delete=doctor.can_delete, is_admin=doctor.is_admin)
 
 
 @app.get("/auth/me")
 def me(doctor: Doctor = Depends(get_current_doctor)):
-    return {"username": doctor.username, "display_name": doctor.display_name, "role": doctor.role, "can_create": doctor.can_create, "can_export": doctor.can_export, "is_admin": doctor.is_admin}
+    return {"username": doctor.username, "display_name": doctor.display_name, "role": doctor.role, "can_create": doctor.can_create, "can_export": doctor.can_export, "can_delete": doctor.can_delete, "is_admin": doctor.is_admin}
 
 
 class ChangePasswordIn(BaseModel):
@@ -546,6 +653,7 @@ class DoctorCreateIn(BaseModel):
     role: str = "hoc_vien"  # chỉ để hiển thị, không quyết định quyền
     can_create: bool = False
     can_export: bool = False
+    can_delete: bool = False
     is_admin: bool = False
 
 
@@ -554,6 +662,7 @@ class DoctorPermissionsIn(BaseModel):
     role: Optional[str] = None
     can_create: Optional[bool] = None
     can_export: Optional[bool] = None
+    can_delete: Optional[bool] = None
     is_admin: Optional[bool] = None
 
 
@@ -564,7 +673,7 @@ class ResetPasswordIn(BaseModel):
 def doctor_public(d: Doctor) -> dict:
     return {
         "username": d.username, "display_name": d.display_name, "role": d.role,
-        "can_create": d.can_create, "can_export": d.can_export, "is_admin": d.is_admin,
+        "can_create": d.can_create, "can_export": d.can_export, "can_delete": d.can_delete, "is_admin": d.is_admin,
     }
 
 
@@ -583,7 +692,7 @@ def create_doctor(payload: DoctorCreateIn, session: Session = Depends(get_sessio
     d = Doctor(
         username=payload.username, display_name=payload.display_name,
         hashed_password=hash_password(payload.password), role=payload.role,
-        can_create=payload.can_create, can_export=payload.can_export, is_admin=payload.is_admin,
+        can_create=payload.can_create, can_export=payload.can_export, can_delete=payload.can_delete, is_admin=payload.is_admin,
     )
     session.add(d)
     session.commit()
@@ -597,7 +706,7 @@ def update_doctor_permissions(username: str, payload: DoctorPermissionsIn, sessi
         raise HTTPException(status_code=404, detail="Không tìm thấy tài khoản")
     if username == admin.username and payload.is_admin is False:
         raise HTTPException(status_code=400, detail="Không thể tự bỏ quyền admin của chính mình")
-    for field in ["display_name", "role", "can_create", "can_export", "is_admin"]:
+    for field in ["display_name", "role", "can_create", "can_export", "can_delete", "is_admin"]:
         value = getattr(payload, field)
         if value is not None:
             setattr(d, field, value)
@@ -699,7 +808,7 @@ def upsert_patient(payload: PatientIn, session: Session = Depends(get_session), 
 
 
 @app.delete("/patients/{ma_bn}")
-def delete_patient(ma_bn: str, session: Session = Depends(get_session), doctor: Doctor = Depends(require_export_permission)):
+def delete_patient(ma_bn: str, session: Session = Depends(get_session), doctor: Doctor = Depends(require_delete_permission)):
     """Xoá toàn bộ hồ sơ của 1 bệnh nhân (bệnh án + mọi lần tái khám của cả 3 bệnh + thông tin bệnh nhân) —
     dùng để dọn dữ liệu demo/test, không thể hoàn tác. Chỉ tài khoản quyền đầy đủ mới xoá được."""
     p = session.get(Patient, ma_bn)
@@ -720,7 +829,7 @@ def delete_patient(ma_bn: str, session: Session = Depends(get_session), doctor: 
 # Cùng một bệnh có thể được gọi bằng nhiều tên qua các phiên bản: khoá kỹ thuật ("nonscar"),
 # nhãn cũ ("NONSCAR"), tiền tố mã lưu trữ ("NS") hay ký hiệu mới ("NSA"). Chuẩn hoá hết về
 # nhãn hiện hành để bản frontend cũ còn trong bộ nhớ đệm trình duyệt vẫn dùng được bình thường.
-_TEN_KHAC = {"NONSCAR": "NSA", "NS": "NSA", "NSA": "NSA"}
+_TEN_KHAC = {"NONSCAR": "TE", "NS": "TE", "NSA": "TE", "TE": "TE"}
 
 
 def chuan_hoa_nhan_benh(benh):
@@ -733,7 +842,7 @@ def chuan_hoa_nhan_benh(benh):
 
 
 def _find_disease_config(benh: str):
-    khoa = {"nsa": "nonscar", "ns": "nonscar", "nonscar": "nonscar"}.get(str(benh).lower(), str(benh).lower())
+    khoa = {"te": "nonscar", "nsa": "nonscar", "ns": "nonscar", "nonscar": "nonscar"}.get(str(benh).lower(), str(benh).lower())
     cfg = next((c for c in DISEASE_CONFIGS if c["key"] == khoa), None)
     if not cfg:
         raise HTTPException(status_code=404, detail=f"Không rõ loại bệnh '{benh}'")
@@ -741,7 +850,7 @@ def _find_disease_config(benh: str):
 
 
 @app.delete("/cases/{ma_bn}/{benh}")
-def delete_case(ma_bn: str, benh: str, session: Session = Depends(get_session), doctor: Doctor = Depends(require_export_permission)):
+def delete_case(ma_bn: str, benh: str, session: Session = Depends(get_session), doctor: Doctor = Depends(require_delete_permission)):
     """Xoá riêng 1 bệnh án (bệnh án mới + toàn bộ tái khám của đúng 1 bệnh) — GIỮ LẠI thông tin bệnh nhân,
     dùng khi cần làm lại từ đầu 1 bệnh án nhưng không muốn nhập lại hành chính bệnh nhân."""
     cfg = _find_disease_config(benh)
@@ -757,7 +866,7 @@ def delete_case(ma_bn: str, benh: str, session: Session = Depends(get_session), 
 
 
 @app.delete("/cases/{ma_bn}/{benh}/followups/{followup_id}")
-def delete_followup(ma_bn: str, benh: str, followup_id: int, session: Session = Depends(get_session), doctor: Doctor = Depends(require_export_permission)):
+def delete_followup(ma_bn: str, benh: str, followup_id: int, session: Session = Depends(get_session), doctor: Doctor = Depends(require_delete_permission)):
     """Xoá riêng 1 lần tái khám — giữ nguyên bệnh án mới và các lần tái khám khác."""
     cfg = _find_disease_config(benh)
     FUModel = cfg["followup_model"]
@@ -828,6 +937,7 @@ def save_case_data(
     case.benh_an_moi = json.dumps(payload.data, ensure_ascii=False)
     case.da_dien_du_lieu = all_sections_filled(payload.data, NEW_CASE_SECTIONS)
     cap_nhat_cot_gpb(case, payload.data)
+    cap_nhat_cot_luu_y(case, payload.data)
     cap_nhat_cot_dong_mac(case, payload.data)
     salt = calc_salt(payload.data.get("vung", {}))
     case.muc_do_nang = mucdo_sau_dieu_chinh(salt, payload.data.get("yeuToNangBac"))
@@ -850,13 +960,20 @@ def create_followup(
     if not case:
         raise HTTPException(status_code=404, detail="Bệnh nhân chưa có mã lưu trữ AA")
     ngay = payload.ngay_kham or date.today().isoformat()
+    # Mang lưu ý của (các) lần khám trước sang phiếu mới để bác sĩ nhìn thấy ngay,
+    # rồi tắt dấu Chú ý ở các phiếu cũ — đúng yêu cầu "hết khi đã tạo lần khám tiếp theo".
+    ds_luu_y = gom_luu_y_dang_mo(session, AACase, AAFollowUp, case.id)
+    du_lieu_moi = {"ngayKham": ngay}
+    if ds_luu_y:
+        du_lieu_moi["luuYTuLanTruoc"] = " | ".join(ds_luu_y)
     fu = AAFollowUp(
         case_id=case.id,
         ngay_kham=parse_date(ngay),
         bac_si_tao=doctor.display_name,
-        data=json.dumps({"ngayKham": ngay}, ensure_ascii=False),
+        data=json.dumps(du_lieu_moi, ensure_ascii=False),
         da_dien_du_lieu=False,
     )
+    tat_luu_y(session, AACase, AAFollowUp, case.id)
     session.add(fu)
     session.commit()
     session.refresh(fu)
@@ -878,6 +995,7 @@ def save_followup_data(
     fu.ngay_kham = parse_date(payload.data.get("ngayKham")) or fu.ngay_kham
     fu.da_dien_du_lieu = all_sections_filled(payload.data, FOLLOWUP_SECTIONS)
     cap_nhat_cot_gpb(fu, payload.data)
+    cap_nhat_cot_luu_y(fu, payload.data)
     dong_bo_dong_mac_tu_tai_kham(session, fu, AACase, payload.data)
     case = session.get(AACase, fu.case_id)
     salt_now = calc_salt(payload.data.get("vung", {}))
@@ -946,6 +1064,7 @@ def save_aga_case_data(
     case.benh_an_moi = json.dumps(payload.data, ensure_ascii=False)
     case.da_dien_du_lieu = all_sections_filled(payload.data, NEW_AGA_CASE_SECTIONS)
     cap_nhat_cot_gpb(case, payload.data)
+    cap_nhat_cot_luu_y(case, payload.data)
     cap_nhat_cot_dong_mac(case, payload.data)
     case.updated_at = datetime.utcnow()
     session.add(case)
@@ -964,13 +1083,20 @@ def create_aga_followup(
     if not case:
         raise HTTPException(status_code=404, detail="Bệnh nhân chưa có mã lưu trữ AGA")
     ngay = payload.ngay_kham or date.today().isoformat()
+    # Mang lưu ý của (các) lần khám trước sang phiếu mới để bác sĩ nhìn thấy ngay,
+    # rồi tắt dấu Chú ý ở các phiếu cũ — đúng yêu cầu "hết khi đã tạo lần khám tiếp theo".
+    ds_luu_y = gom_luu_y_dang_mo(session, AGACase, AGAFollowUp, case.id)
+    du_lieu_moi = {"ngayKham": ngay}
+    if ds_luu_y:
+        du_lieu_moi["luuYTuLanTruoc"] = " | ".join(ds_luu_y)
     fu = AGAFollowUp(
         case_id=case.id,
         ngay_kham=parse_date(ngay),
         bac_si_tao=doctor.display_name,
-        data=json.dumps({"ngayKham": ngay}, ensure_ascii=False),
+        data=json.dumps(du_lieu_moi, ensure_ascii=False),
         da_dien_du_lieu=False,
     )
+    tat_luu_y(session, AGACase, AGAFollowUp, case.id)
     session.add(fu)
     session.commit()
     session.refresh(fu)
@@ -992,6 +1118,7 @@ def save_aga_followup_data(
     fu.ngay_kham = parse_date(payload.data.get("ngayKham")) or fu.ngay_kham
     fu.da_dien_du_lieu = all_sections_filled(payload.data, FOLLOWUP_AGA_SECTIONS)
     cap_nhat_cot_gpb(fu, payload.data)
+    cap_nhat_cot_luu_y(fu, payload.data)
     dong_bo_dong_mac_tu_tai_kham(session, fu, AGACase, payload.data)
     fu.dieu_tri = (payload.data.get("dieuTri") or "")[:255]
     session.add(fu)
@@ -1011,7 +1138,7 @@ def create_nonscar_case(
         raise HTTPException(status_code=404, detail="Bệnh nhân chưa tồn tại — tạo bệnh nhân trước")
     existing = session.exec(select(NonScarCase).where(NonScarCase.ma_bn == ma_bn)).first()
     if existing:
-        raise HTTPException(status_code=400, detail=f"Bệnh nhân đã có mã lưu trữ NSA: {existing.ma_luu_tru}")
+        raise HTTPException(status_code=400, detail=f"Bệnh nhân đã có mã lưu trữ TE: {existing.ma_luu_tru}")
     ma_luu_tru = next_ma_luu_tru(session, "NS", NonScarCase)
     case = NonScarCase(
         ma_luu_tru=ma_luu_tru,
@@ -1057,6 +1184,7 @@ def save_nonscar_case_data(
     case.benh_an_moi = json.dumps(payload.data, ensure_ascii=False)
     case.da_dien_du_lieu = all_sections_filled(payload.data, NEW_NONSCAR_CASE_SECTIONS)
     cap_nhat_cot_gpb(case, payload.data)
+    cap_nhat_cot_luu_y(case, payload.data)
     cap_nhat_cot_dong_mac(case, payload.data)
     case.updated_at = datetime.utcnow()
     session.add(case)
@@ -1073,15 +1201,22 @@ def create_nonscar_followup(
 ):
     case = session.exec(select(NonScarCase).where(NonScarCase.ma_bn == ma_bn)).first()
     if not case:
-        raise HTTPException(status_code=404, detail="Bệnh nhân chưa có mã lưu trữ NSA")
+        raise HTTPException(status_code=404, detail="Bệnh nhân chưa có mã lưu trữ TE")
     ngay = payload.ngay_kham or date.today().isoformat()
+    # Mang lưu ý của (các) lần khám trước sang phiếu mới để bác sĩ nhìn thấy ngay,
+    # rồi tắt dấu Chú ý ở các phiếu cũ — đúng yêu cầu "hết khi đã tạo lần khám tiếp theo".
+    ds_luu_y = gom_luu_y_dang_mo(session, NonScarCase, NonScarFollowUp, case.id)
+    du_lieu_moi = {"ngayKham": ngay}
+    if ds_luu_y:
+        du_lieu_moi["luuYTuLanTruoc"] = " | ".join(ds_luu_y)
     fu = NonScarFollowUp(
         case_id=case.id,
         ngay_kham=parse_date(ngay),
         bac_si_tao=doctor.display_name,
-        data=json.dumps({"ngayKham": ngay}, ensure_ascii=False),
+        data=json.dumps(du_lieu_moi, ensure_ascii=False),
         da_dien_du_lieu=False,
     )
+    tat_luu_y(session, NonScarCase, NonScarFollowUp, case.id)
     session.add(fu)
     session.commit()
     session.refresh(fu)
@@ -1103,6 +1238,7 @@ def save_nonscar_followup_data(
     fu.ngay_kham = parse_date(payload.data.get("ngayKham")) or fu.ngay_kham
     fu.da_dien_du_lieu = all_sections_filled(payload.data, FOLLOWUP_NONSCAR_SECTIONS)
     cap_nhat_cot_gpb(fu, payload.data)
+    cap_nhat_cot_luu_y(fu, payload.data)
     dong_bo_dong_mac_tu_tai_kham(session, fu, NonScarCase, payload.data)
     fu.dieu_tri = (payload.data.get("dieuTri") or "")[:255]
     session.add(fu)
@@ -1209,6 +1345,7 @@ def save_sa_case_data(
     case.benh_an_moi = json.dumps(payload.data, ensure_ascii=False)
     case.da_dien_du_lieu = all_sections_filled(payload.data, NEW_SA_CASE_SECTIONS)
     cap_nhat_cot_gpb(case, payload.data)
+    cap_nhat_cot_luu_y(case, payload.data)
     cap_nhat_cot_dong_mac(case, payload.data)
     case.muc_do_nang = mucdo_lppai(calc_lppai(payload.data))
     case.updated_at = datetime.utcnow()
@@ -1228,13 +1365,20 @@ def create_sa_followup(
     if not case:
         raise HTTPException(status_code=404, detail="Bệnh nhân chưa có mã lưu trữ SA")
     ngay = payload.ngay_kham or date.today().isoformat()
+    # Mang lưu ý của (các) lần khám trước sang phiếu mới để bác sĩ nhìn thấy ngay,
+    # rồi tắt dấu Chú ý ở các phiếu cũ — đúng yêu cầu "hết khi đã tạo lần khám tiếp theo".
+    ds_luu_y = gom_luu_y_dang_mo(session, SACase, SAFollowUp, case.id)
+    du_lieu_moi = {"ngayKham": ngay}
+    if ds_luu_y:
+        du_lieu_moi["luuYTuLanTruoc"] = " | ".join(ds_luu_y)
     fu = SAFollowUp(
         case_id=case.id,
         ngay_kham=parse_date(ngay),
         bac_si_tao=doctor.display_name,
-        data=json.dumps({"ngayKham": ngay}, ensure_ascii=False),
+        data=json.dumps(du_lieu_moi, ensure_ascii=False),
         da_dien_du_lieu=False,
     )
+    tat_luu_y(session, SACase, SAFollowUp, case.id)
     session.add(fu)
     session.commit()
     session.refresh(fu)
@@ -1256,6 +1400,7 @@ def save_sa_followup_data(
     fu.ngay_kham = parse_date(payload.data.get("ngayKham")) or fu.ngay_kham
     fu.da_dien_du_lieu = all_sections_filled(payload.data, FOLLOWUP_SA_SECTIONS)
     cap_nhat_cot_gpb(fu, payload.data)
+    cap_nhat_cot_luu_y(fu, payload.data)
     dong_bo_dong_mac_tu_tai_kham(session, fu, SACase, payload.data)
     fu.muc_do_nang = mucdo_lppai(calc_lppai(payload.data))
     fu.dieu_tri = (payload.data.get("dieuTri") or "")[:255]
@@ -1322,6 +1467,7 @@ def save_ttm_case_data(
     case.benh_an_moi = json.dumps(payload.data, ensure_ascii=False)
     case.da_dien_du_lieu = all_sections_filled(payload.data, NEW_TTM_CASE_SECTIONS)
     cap_nhat_cot_gpb(case, payload.data)
+    cap_nhat_cot_luu_y(case, payload.data)
     cap_nhat_cot_dong_mac(case, payload.data)
     case.muc_do_nang = mucdo_mgh(calc_mgh(payload.data))
     case.updated_at = datetime.utcnow()
@@ -1341,13 +1487,20 @@ def create_ttm_followup(
     if not case:
         raise HTTPException(status_code=404, detail="Bệnh nhân chưa có mã lưu trữ TTM")
     ngay = payload.ngay_kham or date.today().isoformat()
+    # Mang lưu ý của (các) lần khám trước sang phiếu mới để bác sĩ nhìn thấy ngay,
+    # rồi tắt dấu Chú ý ở các phiếu cũ — đúng yêu cầu "hết khi đã tạo lần khám tiếp theo".
+    ds_luu_y = gom_luu_y_dang_mo(session, TTMCase, TTMFollowUp, case.id)
+    du_lieu_moi = {"ngayKham": ngay}
+    if ds_luu_y:
+        du_lieu_moi["luuYTuLanTruoc"] = " | ".join(ds_luu_y)
     fu = TTMFollowUp(
         case_id=case.id,
         ngay_kham=parse_date(ngay),
         bac_si_tao=doctor.display_name,
-        data=json.dumps({"ngayKham": ngay}, ensure_ascii=False),
+        data=json.dumps(du_lieu_moi, ensure_ascii=False),
         da_dien_du_lieu=False,
     )
+    tat_luu_y(session, TTMCase, TTMFollowUp, case.id)
     session.add(fu)
     session.commit()
     session.refresh(fu)
@@ -1369,6 +1522,7 @@ def save_ttm_followup_data(
     fu.ngay_kham = parse_date(payload.data.get("ngayKham")) or fu.ngay_kham
     fu.da_dien_du_lieu = all_sections_filled(payload.data, FOLLOWUP_TTM_SECTIONS)
     cap_nhat_cot_gpb(fu, payload.data)
+    cap_nhat_cot_luu_y(fu, payload.data)
     dong_bo_dong_mac_tu_tai_kham(session, fu, TTMCase, payload.data)
     fu.muc_do_nang = mucdo_mgh(calc_mgh(payload.data))
     fu.dieu_tri = (payload.data.get("dieuTri") or "")[:255]
@@ -1380,6 +1534,11 @@ def save_ttm_followup_data(
 # ---------- địa chỉ thay thế: "nsa" trỏ về đúng các hàm của "nonscar" ----------
 # Bản frontend cũ suy ra đường dẫn từ nhãn hiển thị nên gửi "nsa". Mở thêm lối vào này để
 # máy nào còn giữ bản cũ trong bộ nhớ đệm vẫn dùng được, không phải chờ xoá cache.
+app.add_api_route("/cases/{ma_bn}/te/create", create_nonscar_case, methods=["POST"], include_in_schema=False)
+app.add_api_route("/cases/{ma_bn}/te", get_nonscar_case, methods=["GET"], include_in_schema=False)
+app.add_api_route("/cases/{ma_bn}/te", save_nonscar_case_data, methods=["PUT"], include_in_schema=False)
+app.add_api_route("/cases/{ma_bn}/te/followups/create", create_nonscar_followup, methods=["POST"], include_in_schema=False)
+app.add_api_route("/cases/{ma_bn}/te/followups/{followup_id}", save_nonscar_followup_data, methods=["PUT"], include_in_schema=False)
 app.add_api_route("/cases/{ma_bn}/nsa/create", create_nonscar_case, methods=["POST"], include_in_schema=False)
 app.add_api_route("/cases/{ma_bn}/nsa", get_nonscar_case, methods=["GET"], include_in_schema=False)
 app.add_api_route("/cases/{ma_bn}/nsa", save_nonscar_case_data, methods=["PUT"], include_in_schema=False)
@@ -1407,7 +1566,7 @@ def dashboard_today(session: Session = Depends(get_session), doctor: Doctor = De
             d = json.loads(c.benh_an_moi)
             out.append({
                 "loai": "Bệnh án mới", "ma_luu_tru": c.ma_luu_tru, "ma_bn": c.ma_bn, "benh": label,
-                "dong_mac": c.dong_mac or "",
+                "dong_mac": c.dong_mac or "", "luu_y": c.luu_y or "",
                 "ho_ten": p.ho_ten if p else None, "da_dien_du_lieu": c.da_dien_du_lieu,
                 "bac_si_tao": c.bac_si_tao, "followup_id": None, "dieu_tri": d.get("dieuTri", ""),
                 "gpb_co": d.get("gpbCo"), "gpb_ngay_thuc_hien": d.get("gpbNgayThucHien"), "gpb_ket_qua": d.get("gpbKetQua"),
@@ -1419,7 +1578,7 @@ def dashboard_today(session: Session = Depends(get_session), doctor: Doctor = De
             fd = json.loads(f.data)
             out.append({
                 "loai": "Tái khám", "ma_luu_tru": c.ma_luu_tru if c else None, "ma_bn": c.ma_bn if c else None, "benh": label,
-                "dong_mac": (c.dong_mac or "") if c else "",
+                "dong_mac": (c.dong_mac or "") if c else "", "luu_y": f.luu_y or "",
                 "ho_ten": p.ho_ten if p else None, "da_dien_du_lieu": f.da_dien_du_lieu,
                 "bac_si_tao": f.bac_si_tao, "followup_id": f.id, "dieu_tri": f.dieu_tri or "",
                 "gpb_co": fd.get("gpbCo"), "gpb_ngay_thuc_hien": fd.get("gpbNgayThucHien"), "gpb_ket_qua": fd.get("gpbKetQua"),
@@ -1459,7 +1618,7 @@ def gpb_waitlist(session: Session = Depends(get_session), doctor: Doctor = Depen
 
         for c in cases:
             p = bn.get(c.ma_bn)
-            out.append({"loai": "Bệnh án mới", "benh": label, "dong_mac": c.dong_mac or "",
+            out.append({"loai": "Bệnh án mới", "benh": label, "dong_mac": c.dong_mac or "", "luu_y": c.luu_y or "",
                         "ma_bn": c.ma_bn, "ho_ten": p.ho_ten if p else None, "ma_luu_tru": c.ma_luu_tru,
                         "days": max(0, (hom_nay - c.gpb_cho_tu).days), "followup_id": None})
         for f in fus:
@@ -1467,7 +1626,7 @@ def gpb_waitlist(session: Session = Depends(get_session), doctor: Doctor = Depen
             if not c:
                 continue
             p = bn.get(c.ma_bn)
-            out.append({"loai": f"Tái khám {thu_tu.get(f.id, 1)}", "benh": label, "dong_mac": c.dong_mac or "",
+            out.append({"loai": f"Tái khám {thu_tu.get(f.id, 1)}", "benh": label, "dong_mac": c.dong_mac or "", "luu_y": f.luu_y or "",
                         "ma_bn": c.ma_bn, "ho_ten": p.ho_ten if p else None, "ma_luu_tru": c.ma_luu_tru,
                         "days": max(0, (hom_nay - f.gpb_cho_tu).days), "followup_id": f.id})
     # xếp theo số ngày chờ giảm dần; thêm khoá phụ để thứ tự luôn ổn định giữa các lần gọi
@@ -1525,7 +1684,7 @@ def search_cases(
                 d0 = json.loads(c.benh_an_moi)
                 results.append({
                     "loai": "Bệnh án mới", "benh": label, "ma_luu_tru": c.ma_luu_tru, "ma_bn": c.ma_bn,
-                    "dong_mac": c.dong_mac or "",
+                    "dong_mac": c.dong_mac or "", "luu_y": c.luu_y or "",
                     "ho_ten": p.ho_ten if p else None, "ngay": c.ngay_tao.isoformat() if c.ngay_tao else None,
                     "muc_do_nang": c.muc_do_nang, "da_dien_du_lieu": c.da_dien_du_lieu, "followup_id": None,
                     "so_luot_tai_kham": so_luot_tk,
@@ -1536,7 +1695,7 @@ def search_cases(
                     fd = json.loads(f.data)
                     results.append({
                         "loai": f"Tái khám {i + 1}", "benh": label, "ma_luu_tru": c.ma_luu_tru, "ma_bn": c.ma_bn,
-                        "dong_mac": c.dong_mac or "",
+                        "dong_mac": c.dong_mac or "", "luu_y": f.luu_y or "",
                         "ho_ten": p.ho_ten if p else None, "ngay": f.ngay_kham.isoformat() if f.ngay_kham else None,
                         "muc_do_nang": f.muc_do_nang, "da_dien_du_lieu": f.da_dien_du_lieu, "followup_id": f.id,
                         "so_luot_tai_kham": so_luot_tk,
@@ -1569,7 +1728,7 @@ def search_cases(
             d0 = json.loads(c.benh_an_moi)
             results.append({
                 "loai": "Bệnh án mới", "benh": label, "ma_luu_tru": c.ma_luu_tru, "ma_bn": c.ma_bn,
-                "dong_mac": c.dong_mac or "",
+                "dong_mac": c.dong_mac or "", "luu_y": c.luu_y or "",
                 "ho_ten": p.ho_ten if p else None, "ngay": c.ngay_tao.isoformat() if c.ngay_tao else None,
                 "muc_do_nang": c.muc_do_nang, "da_dien_du_lieu": c.da_dien_du_lieu, "followup_id": None,
                 "gpb_co": d0.get("gpbCo"), "gpb_ngay_thuc_hien": d0.get("gpbNgayThucHien"), "gpb_ket_qua": d0.get("gpbKetQua"),
@@ -1599,7 +1758,7 @@ def search_cases(
             fd = json.loads(f.data)
             results.append({
                 "loai": "Tái khám", "benh": label, "ma_luu_tru": c.ma_luu_tru if c else None, "ma_bn": c.ma_bn if c else None,
-                "dong_mac": (c.dong_mac or "") if c else "",
+                "dong_mac": (c.dong_mac or "") if c else "", "luu_y": f.luu_y or "",
                 "ho_ten": p.ho_ten if p else None, "ngay": f.ngay_kham.isoformat() if f.ngay_kham else None,
                 "muc_do_nang": f.muc_do_nang, "da_dien_du_lieu": f.da_dien_du_lieu, "followup_id": f.id,
                 "gpb_co": fd.get("gpbCo"), "gpb_ngay_thuc_hien": fd.get("gpbNgayThucHien"), "gpb_ket_qua": fd.get("gpbKetQua"),
@@ -1628,7 +1787,7 @@ def recent_cases(limit: int = 8, session: Session = Depends(get_session), doctor
 @app.get("/export/raw")
 def export_raw(benh: Optional[str] = None, session: Session = Depends(get_session), doctor: Doctor = Depends(require_export_permission)):
     """Trả về toàn bộ dữ liệu của cả 3 bệnh (mọi bệnh nhân) dạng JSON đầy đủ — dùng để dựng file Excel phía trình duyệt.
-    Truyền benh=AA/AGA/NSA/SA/TTM để chỉ lấy đúng 1 bệnh."""
+    Truyền benh=AA/AGA/TE/SA/TTM để chỉ lấy đúng 1 bệnh."""
     benh = chuan_hoa_nhan_benh(benh)
     out = []
     for cfg in DISEASE_CONFIGS:

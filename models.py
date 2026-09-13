@@ -12,6 +12,7 @@ class Doctor(SQLModel, table=True):
     role: str = Field(default="hoc_vien", max_length=16)
     can_create: bool = Field(default=False)  # được tạo mã lưu trữ mới (bệnh án mới / tái khám mới)
     can_export: bool = Field(default=False)  # được xuất dữ liệu tổng hợp nghiên cứu
+    can_delete: bool = Field(default=False)  # được xoá bệnh án / lần tái khám / bệnh nhân
     is_admin: bool = Field(default=False)  # được cấp/sửa/xoá tài khoản người khác
     # Mọi tài khoản đăng nhập được đều mặc định điền/sửa được dữ liệu trong hồ sơ đã có — không cần cờ riêng
 
@@ -48,6 +49,8 @@ class AACase(SQLModel, table=True):
     dong_mac: Optional[str] = Field(default=None, max_length=64, index=True)
     gpb_trang_thai: Optional[str] = Field(default=None, max_length=8, index=True)
     gpb_cho_tu: Optional[date] = Field(default=None, index=True)
+    # Lưu ý cho lần khám sau: "" = không có. Tự xoá khi lần khám tiếp theo được tạo.
+    luu_y: Optional[str] = Field(default=None, max_length=500)
     the_lam_sang: Optional[str] = Field(default=None, max_length=64)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -62,6 +65,8 @@ class AAFollowUp(SQLModel, table=True):
     muc_do_nang: Optional[str] = Field(default=None, max_length=32, index=True)
     gpb_trang_thai: Optional[str] = Field(default=None, max_length=8, index=True)
     gpb_cho_tu: Optional[date] = Field(default=None, index=True)
+    # Lưu ý cho lần khám sau: "" = không có. Tự xoá khi lần khám tiếp theo được tạo.
+    luu_y: Optional[str] = Field(default=None, max_length=500)
     dieu_tri: Optional[str] = Field(default=None, max_length=255, index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -84,6 +89,8 @@ class AGACase(SQLModel, table=True):
     dong_mac: Optional[str] = Field(default=None, max_length=64, index=True)
     gpb_trang_thai: Optional[str] = Field(default=None, max_length=8, index=True)
     gpb_cho_tu: Optional[date] = Field(default=None, index=True)
+    # Lưu ý cho lần khám sau: "" = không có. Tự xoá khi lần khám tiếp theo được tạo.
+    luu_y: Optional[str] = Field(default=None, max_length=500)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -97,6 +104,8 @@ class AGAFollowUp(SQLModel, table=True):
     muc_do_nang: Optional[str] = Field(default=None, max_length=32, index=True)
     gpb_trang_thai: Optional[str] = Field(default=None, max_length=8, index=True)
     gpb_cho_tu: Optional[date] = Field(default=None, index=True)
+    # Lưu ý cho lần khám sau: "" = không có. Tự xoá khi lần khám tiếp theo được tạo.
+    luu_y: Optional[str] = Field(default=None, max_length=500)
     dieu_tri: Optional[str] = Field(default=None, max_length=255, index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -119,6 +128,8 @@ class NonScarCase(SQLModel, table=True):
     dong_mac: Optional[str] = Field(default=None, max_length=64, index=True)
     gpb_trang_thai: Optional[str] = Field(default=None, max_length=8, index=True)
     gpb_cho_tu: Optional[date] = Field(default=None, index=True)
+    # Lưu ý cho lần khám sau: "" = không có. Tự xoá khi lần khám tiếp theo được tạo.
+    luu_y: Optional[str] = Field(default=None, max_length=500)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -132,6 +143,8 @@ class NonScarFollowUp(SQLModel, table=True):
     muc_do_nang: Optional[str] = Field(default=None, max_length=32, index=True)
     gpb_trang_thai: Optional[str] = Field(default=None, max_length=8, index=True)
     gpb_cho_tu: Optional[date] = Field(default=None, index=True)
+    # Lưu ý cho lần khám sau: "" = không có. Tự xoá khi lần khám tiếp theo được tạo.
+    luu_y: Optional[str] = Field(default=None, max_length=500)
     dieu_tri: Optional[str] = Field(default=None, max_length=255, index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -155,6 +168,8 @@ class SACase(SQLModel, table=True):
     dong_mac: Optional[str] = Field(default=None, max_length=64, index=True)
     gpb_trang_thai: Optional[str] = Field(default=None, max_length=8, index=True)
     gpb_cho_tu: Optional[date] = Field(default=None, index=True)
+    # Lưu ý cho lần khám sau: "" = không có. Tự xoá khi lần khám tiếp theo được tạo.
+    luu_y: Optional[str] = Field(default=None, max_length=500)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -168,6 +183,8 @@ class SAFollowUp(SQLModel, table=True):
     muc_do_nang: Optional[str] = Field(default=None, max_length=32, index=True)
     gpb_trang_thai: Optional[str] = Field(default=None, max_length=8, index=True)
     gpb_cho_tu: Optional[date] = Field(default=None, index=True)
+    # Lưu ý cho lần khám sau: "" = không có. Tự xoá khi lần khám tiếp theo được tạo.
+    luu_y: Optional[str] = Field(default=None, max_length=500)
     dieu_tri: Optional[str] = Field(default=None, max_length=255, index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -191,6 +208,8 @@ class TTMCase(SQLModel, table=True):
     dong_mac: Optional[str] = Field(default=None, max_length=64, index=True)
     gpb_trang_thai: Optional[str] = Field(default=None, max_length=8, index=True)
     gpb_cho_tu: Optional[date] = Field(default=None, index=True)
+    # Lưu ý cho lần khám sau: "" = không có. Tự xoá khi lần khám tiếp theo được tạo.
+    luu_y: Optional[str] = Field(default=None, max_length=500)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -204,5 +223,7 @@ class TTMFollowUp(SQLModel, table=True):
     muc_do_nang: Optional[str] = Field(default=None, max_length=32, index=True)
     gpb_trang_thai: Optional[str] = Field(default=None, max_length=8, index=True)
     gpb_cho_tu: Optional[date] = Field(default=None, index=True)
+    # Lưu ý cho lần khám sau: "" = không có. Tự xoá khi lần khám tiếp theo được tạo.
+    luu_y: Optional[str] = Field(default=None, max_length=500)
     dieu_tri: Optional[str] = Field(default=None, max_length=255, index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)

@@ -54,13 +54,14 @@ if __name__ == "__main__":
                 # không bỏ qua như 2 nhóm trên, để chạy lại seed.py là tự khắc phục được.
                 existing.can_create = True
                 existing.can_export = True
+                existing.can_delete = True
                 existing.is_admin = True
                 session.add(existing)
                 continue
             session.add(Doctor(
                 username=username, display_name=display_name,
                 hashed_password=hash_password(DEFAULT_PASSWORD),
-                role="hoc_vien", can_create=True, can_export=True, is_admin=True,
+                role="hoc_vien", can_create=True, can_export=True, can_delete=True, is_admin=True,
             ))
         session.commit()
 
