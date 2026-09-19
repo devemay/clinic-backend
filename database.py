@@ -1,13 +1,22 @@
 import os
 from sqlmodel import SQLModel, Session, create_engine
 from sqlalchemy import text, inspect
+from sqlalchemy.engine import URL
 
 import config
 
 if config.USE_MYSQL:
-    DATABASE_URL = (
-        f"mysql+pymysql://{config.MYSQL_USER}:{config.MYSQL_PASSWORD}"
-        f"@{config.MYSQL_HOST}:{config.MYSQL_PORT}/{config.MYSQL_DB}?charset=utf8mb4"
+    # Dựng địa chỉ kết nối bằng URL.create (truyền từng phần NGUYÊN VĂN) thay vì ghép chuỗi:
+    # ghép chuỗi thì SQLAlchemy sẽ giải mã "%xx" trong mật khẩu -> mật khẩu có ký tự % (AWS cho
+    # phép) bị đọc sai và máy chủ báo "sai mật khẩu" dù mật khẩu đúng.
+    DATABASE_URL = URL.create(
+        "mysql+pymysql",
+        username=config.MYSQL_USER,
+        password=config.MYSQL_PASSWORD,
+        host=config.MYSQL_HOST,
+        port=int(config.MYSQL_PORT or 3306),
+        database=config.MYSQL_DB,
+        query={"charset": "utf8mb4"},
     )
     engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=280)
 else:

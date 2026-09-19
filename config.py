@@ -21,6 +21,12 @@ S3_BUCKET = os.environ.get("S3_BUCKET")
 
 USE_S3 = bool(AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY and S3_BUCKET)
 
+# Tên các bucket CŨ (cách nhau bởi dấu phẩy) — chỉ dùng khi chuyển ảnh sang bucket/tài khoản AWS
+# mới. Database lưu ảnh dưới dạng đường dẫn đầy đủ CÓ TÊN BUCKET CŨ; khai báo ở đây để phần mềm
+# vẫn nhận ra các đường dẫn đó và cấp lại đường dẫn trỏ sang bucket mới (ảnh đã được chép sang
+# với nguyên tên file). Không khai báo thì toàn bộ ảnh cũ sẽ hiện lỗi sau khi chuyển.
+S3_BUCKET_CU = [x.strip() for x in os.environ.get("S3_BUCKET_CU", "").split(",") if x.strip()]
+
 # ---------- AWS phụ, chỉ dùng để lưu backup (nên KHÁC tài khoản AWS chính) ----------
 BACKUP_AWS_ACCESS_KEY_ID = os.environ.get("BACKUP_AWS_ACCESS_KEY_ID")
 BACKUP_AWS_SECRET_ACCESS_KEY = os.environ.get("BACKUP_AWS_SECRET_ACCESS_KEY")

@@ -3,6 +3,7 @@ import re
 import uuid
 from datetime import datetime
 from typing import Optional
+from urllib.parse import unquote
 
 import config
 
@@ -34,12 +35,22 @@ class S3Storage:
 
     def __init__(self):
         import boto3
+        from botocore.config import Config
 
+        # Ký bằng SigV4 và dùng địa chỉ THEO VÙNG (bucket.s3.<vùng>.amazonaws.com):
+        #  - boto3 mặc định ký đường dẫn ảnh kiểu cũ SigV2. AWS đã thông báo bucket tạo sau
+        #    24/06/2020 không nhận SigV2 -> bucket mới ở tài khoản khoa có thể không mở được ảnh nào.
+        #  - bucket mới tạo mà gọi qua địa chỉ chung (bucket.s3.amazonaws.com, không có vùng) có
+        #    thể bị báo sai chữ ký cho tới khi DNS của AWS cập nhật xong.
+        # SigV4 + địa chỉ theo vùng hoạt động với MỌI bucket, cũ lẫn mới. Hạn tối đa của SigV4 là
+        # 7 ngày — đúng bằng PRESIGN_EXPIRES.
         self.client = boto3.client(
             "s3",
             aws_access_key_id=config.AWS_ACCESS_KEY_ID,
             aws_secret_access_key=config.AWS_SECRET_ACCESS_KEY,
             region_name=config.AWS_REGION,
+            endpoint_url=f"https://s3.{config.AWS_REGION}.amazonaws.com",
+            config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}),
         )
         self.bucket = config.S3_BUCKET
 
@@ -62,14 +73,19 @@ def get_storage():
 
 _S3_URL_RE = None
 def _s3_url_pattern():
+    """Regex nhận ra đường dẫn ảnh của CHÍNH hệ thống (bucket hiện tại + các bucket cũ khai báo
+    trong S3_BUCKET_CU). Khớp cả các dạng URL S3 có thể gặp:
+      - https://BUCKET.s3.amazonaws.com/KEY                 (boto3 mặc định — KHÔNG có tên vùng)
+      - https://BUCKET.s3.ap-southeast-1.amazonaws.com/KEY  / BUCKET.s3-ap-southeast-1...
+      - https://s3.ap-southeast-1.amazonaws.com/BUCKET/KEY  (kiểu đường dẫn, bản cũ có thể tạo)
+    Vùng để tuỳ ý (không cố định theo AWS_REGION) vì tài khoản cũ có thể ở vùng khác."""
     global _S3_URL_RE
     if _S3_URL_RE is None and config.USE_S3:
-        # Lưu ý: boto3 mặc định tạo URL dạng "bucket.s3.amazonaws.com" (KHÔNG có tên vùng trong
-        # tên miền), khác với địa chỉ endpoint dịch vụ "s3.<vùng>.amazonaws.com". Regex trước đây
-        # bắt buộc phải có tên vùng nên không khớp URL thật, khiến hàm làm mới không hoạt động —
-        # để phần "vùng" thành tuỳ chọn để khớp đúng cả 2 dạng URL boto3 có thể tạo ra.
+        ten = sorted({config.S3_BUCKET, *config.S3_BUCKET_CU}, key=len, reverse=True)
+        nhom = "|".join(re.escape(b) for b in ten)
+        vung = r"(?:[.-][a-z0-9-]+)?"
         _S3_URL_RE = re.compile(
-            rf"^https://{re.escape(config.S3_BUCKET)}\.s3(?:[.-]{re.escape(config.AWS_REGION)})?\.amazonaws\.com/([^?]+)"
+            rf"^https://(?:(?:{nhom})\.s3{vung}\.amazonaws\.com/|s3{vung}\.amazonaws\.com/(?:{nhom})/)([^?#]+)"
         )
     return _S3_URL_RE
 
@@ -83,8 +99,11 @@ def refresh_url(url: Optional[str]) -> Optional[str]:
     m = pattern.match(url) if pattern else None
     if not m:
         return url
-    key = m.group(1)
+    # Đường dẫn có chữ ký mã hoá ký tự đặc biệt trong tên file (VD dấu cách -> %20). Phải giải mã
+    # trước khi ký lại, nếu không sẽ bị mã hoá 2 lần và trỏ tới một file không tồn tại.
+    key = unquote(m.group(1))
     try:
+        # luôn ký theo bucket HIỆN TẠI: sau khi chuyển, ảnh cũ đã được chép sang với nguyên tên file
         return S3Storage()._presign(key)
     except Exception:
         return url
