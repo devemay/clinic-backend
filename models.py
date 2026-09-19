@@ -227,3 +227,11 @@ class TTMFollowUp(SQLModel, table=True):
     luu_y: Optional[str] = Field(default=None, max_length=500)
     dieu_tri: Optional[str] = Field(default=None, max_length=255, index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class CaiDat(SQLModel, table=True):
+    """Cài đặt dạng khoá–giá trị, sửa được từ màn hình quản trị mà không cần vào Render.
+    Bảng MỚI nên create_all() tự tạo khi khởi động, không đụng tới bảng có dữ liệu cũ."""
+    khoa: str = Field(primary_key=True, max_length=64)
+    gia_tri: str = Field(default="", sa_column=Column(Text))
+    cap_nhat_luc: datetime = Field(default_factory=datetime.utcnow)

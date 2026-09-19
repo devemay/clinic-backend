@@ -9,3 +9,4 @@ cryptography
 boto3
 pillow
 python-dotenv
+python-pptx

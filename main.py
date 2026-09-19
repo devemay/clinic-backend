@@ -6,10 +6,10 @@ import traceback
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from sqlmodel import Session, select
@@ -17,9 +17,11 @@ from sqlmodel import Session, select
 from auth import authenticate_doctor, create_access_token, get_current_doctor, require_export_permission, require_delete_permission, require_create_permission, require_admin, hash_password, verify_password
 from database import get_session, init_db
 from models import (AACase, AAFollowUp, AGACase, AGAFollowUp, NonScarCase, NonScarFollowUp,
-                    SACase, SAFollowUp, TTMCase, TTMFollowUp, Doctor, Patient)
+                    SACase, SAFollowUp, TTMCase, TTMFollowUp, Doctor, Patient, CaiDat)
 from storage import get_storage, refresh_url
 import survey
+import bao_cao
+import config
 
 app = FastAPI(title="Bệnh án nghiên cứu — API")
 
@@ -592,6 +594,18 @@ DISEASE_CONFIGS = [
     {"key": "sa", "label": "SA", "case_model": SACase, "followup_model": SAFollowUp},
     {"key": "ttm", "label": "TTM", "case_model": TTMCase, "followup_model": TTMFollowUp},
 ]
+
+# Bảng mục bắt buộc của từng bệnh (phiếu mới / phiếu tái khám) — báo cáo tháng dùng để đếm
+# "thiếu mục nào", bằng đúng quy tắc đang gắn nhãn Đã điền / Chưa điền trong app.
+_MUC_THEO_BENH = {
+    "aa": (NEW_CASE_SECTIONS, FOLLOWUP_SECTIONS),
+    "aga": (NEW_AGA_CASE_SECTIONS, FOLLOWUP_AGA_SECTIONS),
+    "nonscar": (NEW_NONSCAR_CASE_SECTIONS, FOLLOWUP_NONSCAR_SECTIONS),
+    "sa": (NEW_SA_CASE_SECTIONS, FOLLOWUP_SA_SECTIONS),
+    "ttm": (NEW_TTM_CASE_SECTIONS, FOLLOWUP_TTM_SECTIONS),
+}
+BAO_CAO_BENH = [{**c, "muc_moi": _MUC_THEO_BENH[c["key"]][0], "muc_tk": _MUC_THEO_BENH[c["key"]][1]}
+                for c in DISEASE_CONFIGS]
 
 
 def next_ma_luu_tru(session: Session, disease: str, model=AACase) -> str:
@@ -1893,3 +1907,170 @@ def serve_local_upload(filename: str):
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Không tìm thấy ảnh")
     return FileResponse(path, media_type="image/webp")
+
+
+
+# =====================================================================
+# BÁO CÁO THÁNG TỰ ĐỘNG
+# =====================================================================
+# Luồng: cron-job.org gọi /bao-cao/hen-gio lúc 0h MỖI ĐÊM. Máy chủ tự quyết có gửi hay không:
+#   - chỉ gửi từ ngày 2 trở đi (ngày 1 để bác sĩ còn kịp điền nốt hồ sơ của ngày cuối tháng),
+#   - chỉ gửi nếu báo cáo tháng trước CHƯA gửi tự động thành công.
+# Vì vậy nếu đêm ngày 2 máy chủ lỗi / mạng lỗi thì đêm ngày 3 tự gửi bù, không cần ai nhớ.
+# Gửi thủ công từ màn quản trị KHÔNG đánh dấu "đã gửi tự động" — để việc gửi thử không làm
+# mất lần gửi thật cho lãnh đạo.
+import hmac
+import threading
+
+_KHOA_NGUOI_NHAN = "bao_cao_nguoi_nhan"
+_KHOA_DA_GUI = "bao_cao_da_gui_tu_dong_thang"
+_KHOA_NHAT_KY = "bao_cao_nhat_ky"
+_KHOA_GUI = threading.Lock()   # chặn 2 lần gửi chạy chồng lên nhau (VD cron gọi lặp)
+
+
+def _doc_cai_dat(session: Session, khoa: str, mac_dinh: str = "") -> str:
+    cd = session.get(CaiDat, khoa)
+    return cd.gia_tri if cd else mac_dinh
+
+
+def _ghi_cai_dat(session: Session, khoa: str, gia_tri: str) -> None:
+    cd = session.get(CaiDat, khoa) or CaiDat(khoa=khoa)
+    cd.gia_tri, cd.cap_nhat_luc = gia_tri, datetime.utcnow()
+    session.add(cd)
+    session.commit()
+
+
+def _ghi_nhat_ky(session: Session, muc: dict) -> None:
+    try:
+        ds = json.loads(_doc_cai_dat(session, _KHOA_NHAT_KY, "[]"))
+    except ValueError:
+        ds = []
+    ds = ([muc] + ds)[:20]  # giữ 20 lần gần nhất
+    _ghi_cai_dat(session, _KHOA_NHAT_KY, json.dumps(ds, ensure_ascii=False))
+
+
+def _tinh(session: Session, thang: str) -> dict:
+    try:
+        return bao_cao.tinh_thong_ke(session, BAO_CAO_BENH, thang, section_filled)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+def _thuc_hien_gui(session: Session, thang: str, tu_dong: bool, nguoi_bam: str = "") -> dict:
+    """Tính số liệu -> dựng slide -> gửi mail -> ghi nhật ký. Trả về bản ghi nhật ký."""
+    nguoi_nhan = bao_cao.tach_danh_sach_mail(_doc_cai_dat(session, _KHOA_NGUOI_NHAN))
+    muc = {"luc": bao_cao.bay_gio_vn().strftime("%d/%m/%Y %H:%M"), "thang": thang,
+           "kieu": "tự động" if tu_dong else f"gửi tay ({nguoi_bam})", "nguoi_nhan": nguoi_nhan}
+    try:
+        tk = bao_cao.tinh_thong_ke(session, BAO_CAO_BENH, thang, section_filled)
+        tep = bao_cao.tao_pptx(tk)
+        muc["ket_qua"] = bao_cao.gui_mail(config, nguoi_nhan, bao_cao.tieu_de_mail(thang),
+                                          bao_cao.noi_dung_mail(tk), bao_cao.ten_tep_bao_cao(thang), tep)
+        muc["ok"] = True
+        if tu_dong:
+            _ghi_cai_dat(session, _KHOA_DA_GUI, thang)
+    except bao_cao.LoiGuiMail as e:
+        muc["ok"], muc["ket_qua"] = False, str(e)
+    except Exception as e:  # lỗi bất ngờ vẫn phải ghi lại để quản trị thấy, không được im lặng
+        traceback.print_exc()
+        muc["ok"], muc["ket_qua"] = False, f"Lỗi không mong đợi: {type(e).__name__}: {e}"
+    _ghi_nhat_ky(session, muc)
+    print(f"[báo cáo tháng] {muc['kieu']} tháng {thang}: {'OK' if muc['ok'] else 'LỖI'} — {muc['ket_qua']}")
+    return muc
+
+
+def _gui_nen(thang: str) -> None:
+    """Chạy sau khi đã trả lời cron-job.org (cron chỉ đợi 30 giây)."""
+    from database import engine
+    if not _KHOA_GUI.acquire(blocking=False):
+        print("[báo cáo tháng] đang có lần gửi khác chạy — bỏ qua")
+        return
+    try:
+        with Session(engine) as session:
+            if _doc_cai_dat(session, _KHOA_DA_GUI) == thang:   # kiểm tra lại trong khoá
+                return
+            _thuc_hien_gui(session, thang, tu_dong=True)
+    finally:
+        _KHOA_GUI.release()
+
+
+class CaiDatBaoCaoIn(BaseModel):
+    nguoi_nhan: List[str] = []
+
+
+@app.get("/bao-cao/cai-dat")
+def xem_cai_dat_bao_cao(session: Session = Depends(get_session), doctor: Doctor = Depends(require_admin)):
+    try:
+        nhat_ky = json.loads(_doc_cai_dat(session, _KHOA_NHAT_KY, "[]"))
+    except ValueError:
+        nhat_ky = []
+    return {
+        "nguoi_nhan": bao_cao.tach_danh_sach_mail(_doc_cai_dat(session, _KHOA_NGUOI_NHAN)),
+        "cach_gui": bao_cao.cach_gui_hien_tai(config),
+        "co_khoa_hen_gio": bool(config.REPORT_CRON_KEY),
+        "da_gui_tu_dong_thang": _doc_cai_dat(session, _KHOA_DA_GUI) or None,
+        "thang_truoc": bao_cao.thang_truoc(bao_cao.bay_gio_vn().date()),
+        "nhat_ky": nhat_ky,
+    }
+
+
+@app.put("/bao-cao/cai-dat")
+def luu_cai_dat_bao_cao(payload: CaiDatBaoCaoIn, session: Session = Depends(get_session),
+                        doctor: Doctor = Depends(require_admin)):
+    ds = bao_cao.tach_danh_sach_mail(payload.nguoi_nhan)
+    sai = bao_cao.mail_sai_dinh_dang(ds)
+    if sai:
+        raise HTTPException(status_code=400, detail="Địa chỉ mail không hợp lệ: " + ", ".join(sai))
+    if len(ds) > 30:
+        raise HTTPException(status_code=400, detail="Tối đa 30 người nhận")
+    _ghi_cai_dat(session, _KHOA_NGUOI_NHAN, "\n".join(ds))
+    return {"ok": True, "nguoi_nhan": ds}
+
+
+@app.get("/bao-cao/thang/{thang}")
+def xem_so_lieu_thang(thang: str, session: Session = Depends(get_session),
+                      doctor: Doctor = Depends(require_export_permission)):
+    return _tinh(session, thang)
+
+
+@app.get("/bao-cao/thang/{thang}/pptx")
+def tai_slide_thang(thang: str, session: Session = Depends(get_session),
+                    doctor: Doctor = Depends(require_export_permission)):
+    tep = bao_cao.tao_pptx(_tinh(session, thang))
+    ten = bao_cao.ten_tep_bao_cao(thang)
+    return Response(content=tep, media_type=bao_cao.MIME_PPTX,
+                    headers={"Content-Disposition": f'attachment; filename="{ten}"'})
+
+
+@app.post("/bao-cao/thang/{thang}/gui")
+def gui_bao_cao_ngay(thang: str, session: Session = Depends(get_session), doctor: Doctor = Depends(require_admin)):
+    try:
+        bao_cao.khoang_thang(thang)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not _KHOA_GUI.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="Đang có một lần gửi khác, thử lại sau ít phút")
+    try:
+        return _thuc_hien_gui(session, thang, tu_dong=False, nguoi_bam=doctor.display_name)
+    finally:
+        _KHOA_GUI.release()
+
+
+@app.api_route("/bao-cao/hen-gio", methods=["GET", "POST"])
+def hen_gio_bao_cao(request: Request, background: BackgroundTasks, khoa: Optional[str] = None,
+                    x_cron_key: Optional[str] = Header(default=None),
+                    session: Session = Depends(get_session)):
+    """Địa chỉ cho cron-job.org gọi mỗi đêm. Trả lời ngay, việc gửi chạy nền."""
+    if not config.REPORT_CRON_KEY:
+        raise HTTPException(status_code=503, detail="Chưa cấu hình REPORT_CRON_KEY trên máy chủ")
+    dua = x_cron_key or khoa or ""
+    if not hmac.compare_digest(dua.encode(), config.REPORT_CRON_KEY.encode()):
+        raise HTTPException(status_code=403, detail="Sai khoá hẹn giờ")
+    hom_nay = bao_cao.bay_gio_vn().date()
+    thang = bao_cao.thang_truoc(hom_nay)
+    if hom_nay.day < 2:
+        return {"ket_qua": "bo_qua", "ly_do": "Chưa tới ngày 2 — để bác sĩ kịp điền nốt hồ sơ cuối tháng"}
+    if _doc_cai_dat(session, _KHOA_DA_GUI) == thang:
+        return {"ket_qua": "bo_qua", "ly_do": f"Báo cáo tháng {thang} đã gửi tự động rồi"}
+    background.add_task(_gui_nen, thang)
+    return {"ket_qua": "dang_gui", "thang": thang}

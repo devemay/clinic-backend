@@ -47,3 +47,16 @@ SURVEY_DEADLINE = _so_giay("SURVEY_DEADLINE", 12)
 
 # ---------- auth ----------
 SECRET_KEY = os.environ.get("CLINIC_SECRET_KEY", "change-this-secret-in-production")
+
+# ---------- Báo cáo tháng tự động ----------
+# Cách 1 (dùng được trên Render miễn phí): chuyển tiếp qua Google Apps Script trong Gmail của khoa.
+MAIL_RELAY_URL = os.environ.get("MAIL_RELAY_URL")   # địa chỉ Web app, kết thúc bằng /exec
+MAIL_RELAY_KEY = os.environ.get("MAIL_RELAY_KEY")   # khoá bí mật, phải trùng với trong Apps Script
+# Cách 2 (chỉ khi máy chủ được phép dùng cổng SMTP: Render trả phí, mail bệnh viện...)
+SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = os.environ.get("SMTP_PORT", "465")
+SMTP_USER = os.environ.get("SMTP_USER")
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD")
+MAIL_FROM_NAME = os.environ.get("MAIL_FROM_NAME", "Phòng khám Rụng tóc")
+# Khoá để cron-job.org gọi vào địa chỉ hẹn giờ gửi báo cáo. Không có khoá thì địa chỉ đó tắt hẳn.
+REPORT_CRON_KEY = os.environ.get("REPORT_CRON_KEY")
