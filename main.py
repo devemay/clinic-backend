@@ -18,7 +18,8 @@ from auth import authenticate_doctor, create_access_token, get_current_doctor, r
 from database import get_session, init_db
 from models import (AACase, AAFollowUp, AGACase, AGAFollowUp, NonScarCase, NonScarFollowUp,
                     SACase, SAFollowUp, TTMCase, TTMFollowUp, Doctor, Patient, CaiDat)
-from storage import get_storage, refresh_url
+from storage import get_storage, refresh_url, nhan_dang_anh, chuyen_webp
+from starlette.concurrency import run_in_threadpool
 import survey
 import bao_cao
 import config
@@ -1896,8 +1897,10 @@ async def upload_image(ma_bn: str, file: UploadFile = File(...), doctor: Doctor 
         raise HTTPException(status_code=400, detail="File tải lên phải là ảnh")
     data = await file.read()
     if len(data) > 8 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="Ảnh quá lớn (giới hạn 8MB sau khi nén WebP)")
-    url = get_storage().save(data, ma_bn)
+        raise HTTPException(status_code=400, detail="Ảnh quá lớn (giới hạn 8MB sau khi nén)")
+    # đổi JPEG/PNG (ảnh từ iPhone) sang WebP; chạy ở luồng phụ để không chặn người dùng khác
+    data = await run_in_threadpool(chuyen_webp, data)
+    url = await run_in_threadpool(get_storage().save, data, ma_bn)
     return {"url": url}
 
 
@@ -1906,7 +1909,9 @@ def serve_local_upload(filename: str):
     path = os.path.join(os.path.dirname(__file__), "uploads", filename)
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Không tìm thấy ảnh")
-    return FileResponse(path, media_type="image/webp")
+    with open(path, "rb") as f:
+        loai = nhan_dang_anh(f.read(12))[1]
+    return FileResponse(path, media_type=loai)
 
 
 
