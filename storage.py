@@ -1,6 +1,7 @@
 import io
 import os
 import re
+import threading
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -27,6 +28,8 @@ def nhan_dang_anh(data: bytes) -> tuple:
 
 WEBP_Q = 80          # ảnh iPhone đã qua 1 lần JPEG nên để cao hơn mức 0.75 của Android một chút -> chất lượng ngang nhau
 RONG_TOI_DA = 900    # đúng mức giao diện thu nhỏ; chỉ để phòng ảnh gửi từ bản giao diện cũ
+DOI_CUNG_LUC = 2     # số ảnh được đổi sang WebP cùng lúc (xem chuyen_webp)
+_KHOA_DOI_ANH = threading.BoundedSemaphore(DOI_CUNG_LUC)
 
 
 def chuyen_webp(data: bytes) -> bytes:
@@ -36,9 +39,20 @@ def chuyen_webp(data: bytes) -> bytes:
     Có lỗi, hoặc bản WebP lại nặng hơn -> giữ nguyên ảnh gốc: không bao giờ để mất ảnh vì bước này."""
     if nhan_dang_anh(data)[0] == "webp":
         return data
+    # Mỗi ảnh khi giải nén chiếm 15-90 MB bộ nhớ. Không giới hạn thì nhiều người tải cùng lúc có thể
+    # làm máy chủ hết RAM và khởi động lại. Chỉ cho DOI_CUNG_LUC ảnh đổi cùng lúc, ảnh khác xếp hàng
+    # vài phần giây -> bộ nhớ luôn trong giới hạn dù bao nhiêu người tải.
+    with _KHOA_DOI_ANH:
+        return _chuyen_webp(data)
+
+
+def _chuyen_webp(data: bytes) -> bytes:
     try:
         from PIL import Image, ImageOps
         im = Image.open(io.BytesIO(data))
+        # ảnh JPEG to (VD ảnh gốc 3024x4032): giải nén thẳng ở cỡ nhỏ hơn -> ít RAM hơn ~4 lần.
+        # Luôn giữ >= RONG_TOI_DA ở cả 2 chiều (ảnh có thể xoay) để không mất độ nét.
+        im.draft("RGB", (RONG_TOI_DA, RONG_TOI_DA))
         im = ImageOps.exif_transpose(im)          # ảnh chụp thẳng từ máy: xoay đúng chiều
         if im.mode not in ("RGB", "RGBA"):
             im = im.convert("RGBA" if "A" in im.getbands() else "RGB")

@@ -1892,7 +1892,12 @@ def export_aa_csv(
 
 # ---------- ảnh ----------
 @app.post("/images/upload")
-async def upload_image(ma_bn: str, file: UploadFile = File(...), doctor: Doctor = Depends(get_current_doctor)):
+async def upload_image(ma_bn: str, file: UploadFile = File(...), doctor: Doctor = Depends(get_current_doctor),
+                       session: Session = Depends(get_session)):
+    # Trả kết nối database về ngay sau bước kiểm tra đăng nhập: tải ảnh không cần database, mà nếu
+    # giữ kết nối suốt lúc đổi ảnh + gửi lên S3 thì chỉ ~15 ảnh cùng lúc là hết kết nối (mặc định
+    # 5 + 10), các ảnh sau phải chờ 30 giây rồi báo lỗi 500 (đã đo: 80 ảnh cùng lúc -> 25 ảnh lỗi).
+    session.close()
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="File tải lên phải là ảnh")
     data = await file.read()
