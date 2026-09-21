@@ -51,6 +51,13 @@ SURVEY_TIMEOUT = _so_giay("SURVEY_TIMEOUT", 6)
 # timeout của urllib không bao được) — quá hạn thì bỏ và trả thông báo dễ hiểu
 SURVEY_DEADLINE = _so_giay("SURVEY_DEADLINE", 12)
 
+# ---------- Máy trạm ở phòng khám (chuyển tiếp phiếu khảo sát) ----------
+# Hệ thống bệnh viện chặn máy chủ ở nước ngoài (Render). Một máy tính ở phòng khám (mạng Việt Nam)
+# chạy chương trình "tram_khao_sat.ps1": nó liên tục hỏi máy chủ "có việc không", tự đọc phiếu từ
+# bệnh viện rồi gửi kết quả về. Có đặt TRAM_KHOA thì máy chủ KHÔNG gọi thẳng bệnh viện nữa mà
+# nhờ máy trạm. Xoá biến này = quay lại gọi thẳng như cũ.
+TRAM_KHOA = (os.environ.get("TRAM_KHOA") or "").strip() or None
+
 # ---------- auth ----------
 SECRET_KEY = os.environ.get("CLINIC_SECRET_KEY", "change-this-secret-in-production")
 

@@ -19,20 +19,42 @@ import urllib.request
 from typing import Any, Dict, List, Optional
 
 import config
+import tram
 
 
 # ---------- 1. Gọi API bệnh viện ----------
 
-def _call_api(ma_bn: str) -> Optional[dict]:
+def url_phieu(ma_bn: str) -> str:
+    """Đường dẫn phiếu khảo sát trên hệ thống bệnh viện — dùng cho nút "Mở phiếu" (dán tay):
+    trình duyệt của bác sĩ ở Việt Nam mở được dù máy chủ Render bị chặn."""
+    ma = (ma_bn or "").strip()
+    if ma.isdigit() and len(ma) < 10:
+        ma = ma.zfill(10)
+    params = urllib.parse.urlencode({
+        "RoomId": config.SURVEY_ROOM_ID,
+        "CheckValue": ma,
+        "FindType": "3",  # 3 = tra theo mã bệnh nhân
+    })
+    return f"{config.SURVEY_API_BASE}/api/services/app/ClinicSurveyAnswer/CheckSurvey?{params}"
+
+
+def _call_api(ma_bn: str, han_giay: Optional[float] = None) -> Optional[dict]:
     params = urllib.parse.urlencode({
         "RoomId": config.SURVEY_ROOM_ID,
         "CheckValue": ma_bn,
         "FindType": "3",  # 3 = tra theo mã bệnh nhân
     })
     url = f"{config.SURVEY_API_BASE}/api/services/app/ClinicSurveyAnswer/CheckSurvey?{params}"
-    req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "benh-an-nghien-cuu/1.0"})
-    with urllib.request.urlopen(req, timeout=config.SURVEY_TIMEOUT) as resp:
-        raw = resp.read().decode("utf-8", errors="replace")
+    if tram.bat():
+        # Nhờ máy trạm ở phòng khám đọc hộ (bệnh viện chặn máy chủ ở nước ngoài)
+        kq = tram.hoi(ma_bn, han_giay if han_giay is not None else config.SURVEY_DEADLINE)
+        if kq["ma_http"] != 200:
+            raise urllib.error.HTTPError(url, kq["ma_http"] or 502, "máy trạm báo lỗi", None, None)
+        raw = kq["noi_dung"]
+    else:
+        req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "benh-an-nghien-cuu/1.0"})
+        with urllib.request.urlopen(req, timeout=config.SURVEY_TIMEOUT) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
     # parse_constant: JSON của Python MẶC ĐỊNH chấp nhận NaN/Infinity, nhưng FastAPI thì
     # KHÔNG đóng gói được 2 giá trị này -> đổi thành None ngay từ lúc đọc.
     body = json.loads(raw, parse_constant=lambda _c: None)
@@ -79,7 +101,9 @@ def _fetch_blocking(ma_bn: str, deadline: float) -> Dict[str, Any]:
         if time.monotonic() >= deadline:
             break
         try:
-            result = _call_api(candidate)
+            result = _call_api(candidate, deadline - time.monotonic())
+        except tram.TramKhongSan as e:
+            return {"found": False, "result": None, "loi": str(e)}
         except urllib.error.HTTPError as e:
             last_error = f"Hệ thống bệnh viện trả lỗi {e.code}"
             continue
@@ -118,6 +142,10 @@ def fetch_survey(ma_bn: str) -> Dict[str, Any]:
     t.start()
     t.join(config.SURVEY_DEADLINE)
     if "res" not in box:
+        if tram.bat():
+            return {"found": False, "result": None, "loi": (
+                f"Máy trạm ở phòng khám không trả lời sau {int(config.SURVEY_DEADLINE)} giây. "
+                "Thử lại, hoặc bấm “Dán phiếu thủ công”.")}
         return {"found": False, "result": None, "loi": (
             f"Hệ thống bệnh viện không phản hồi sau {int(config.SURVEY_DEADLINE)} giây. "
             "Có thể máy chủ đặt ở nước ngoài (Render) không gọi ra được api.dalieu.vn. "
@@ -130,13 +158,16 @@ def ping() -> Dict[str, Any]:
     """Kiểm tra máy chủ có gọi ra được hệ thống bệnh viện không.
     Dùng mã bệnh nhân không tồn tại nên KHÔNG trả về bất kỳ thông tin bệnh nhân nào."""
     out: Dict[str, Any] = {"dia_chi": config.SURVEY_API_BASE, "phong": config.SURVEY_ROOM_ID,
-                           "gioi_han_giay": config.SURVEY_DEADLINE}
+                           "gioi_han_giay": config.SURVEY_DEADLINE,
+                           "che_do": "qua máy trạm ở phòng khám" if tram.bat() else "gọi thẳng từ máy chủ"}
+    if tram.bat():
+        out["may_tram"] = tram.trang_thai()
     box: Dict[str, Any] = {}
     t0 = time.monotonic()
 
     def worker():
         try:
-            _call_api("0000000000")
+            _call_api("0000000000", config.SURVEY_DEADLINE - 0.5)
             box["ket_qua"] = {"goi_duoc": True, "loi": None}
         except urllib.error.HTTPError as e:
             box["ket_qua"] = {"goi_duoc": True, "loi": f"HTTP {e.code} (vẫn kết nối được)"}
@@ -780,9 +811,63 @@ def build_response(ma_bn: str, benh: str) -> Dict[str, Any]:
     fetched = fetch_survey(ma_bn)
     if not fetched["found"]:
         return {"found": False, "loi": fetched["loi"], "co_khao_sat": False,
-                "khao_sat": None, "mapped": {}, "dlqi_tong": None}
+                "khao_sat": None, "mapped": {}, "dlqi_tong": None, "url_phieu": url_phieu(ma_bn)}
+    out = _tao_phan_hoi(fetched["result"], benh)
+    out["url_phieu"] = url_phieu(ma_bn)
+    return out
 
-    result = fetched["result"]
+
+def _bo_so_0(ma) -> str:
+    return str(ma or "").strip().lstrip("0")
+
+
+def tu_noi_dung_dan(ma_bn: str, noi_dung: str, benh: str) -> Dict[str, Any]:
+    """Cách dự phòng khi máy chủ không gọi được bệnh viện: bác sĩ tự mở phiếu trên trình duyệt
+    (ở Việt Nam nên không bị chặn), bấm Ctrl+A, Ctrl+C rồi dán vào phần mềm.
+
+    Chấp nhận cả khi dán lẫn chữ thừa (VD dòng "Pretty-print" của Chrome) — chỉ lấy phần từ dấu
+    { đầu tiên tới dấu } cuối cùng. BẮT BUỘC mã bệnh nhân trong phiếu khớp mã đang mở, để không
+    bao giờ điền nhầm phiếu của người khác vào hồ sơ này."""
+    def loi(thong_diep):
+        return {"found": False, "loi": thong_diep, "co_khao_sat": False, "khao_sat": None,
+                "mapped": {}, "dlqi_tong": None, "url_phieu": url_phieu(ma_bn)}
+
+    text = (noi_dung or "").strip()
+    if len(text) > 3_000_000:
+        return loi("Nội dung dán vào quá dài — có lẽ đã dán nhầm thứ khác.")
+    dau, cuoi = text.find("{"), text.rfind("}")
+    if dau < 0 or cuoi <= dau:
+        return loi("Nội dung dán vào không phải phiếu khảo sát. Mở phiếu, bấm Ctrl+A rồi Ctrl+C, "
+                   "quay lại đây bấm Ctrl+V.")
+    try:
+        body = json.loads(text[dau:cuoi + 1], parse_constant=lambda _c: None)
+    except ValueError:
+        return loi("Nội dung dán vào bị thiếu hoặc lẫn chữ lạ. Mở lại phiếu, bấm Ctrl+A rồi Ctrl+C "
+                   "và dán lại toàn bộ.")
+    if not isinstance(body, dict):
+        return loi("Nội dung dán vào không phải phiếu khảo sát.")
+    if "result" in body:
+        if body.get("success") is False:
+            return loi("Hệ thống bệnh viện báo lỗi trong trang vừa mở — thử mở lại phiếu.")
+        result = body.get("result")
+    elif "patientCode" in body or "answers" in body:
+        result = body
+    else:
+        return loi("Nội dung dán vào không phải phiếu khảo sát.")
+    if not result:
+        return loi("Hệ thống bệnh viện không có hồ sơ với mã này.")
+    result = json_safe(result)
+    ma_phieu = result.get("patientCode")
+    if ma_phieu and _bo_so_0(ma_phieu) != _bo_so_0(ma_bn):
+        return loi(f"Phiếu vừa dán là của bệnh nhân mã {ma_phieu}, KHÔNG khớp mã {ma_bn} đang mở. "
+                   "Không điền để tránh nhầm hồ sơ — kiểm tra lại trang vừa mở.")
+    out = _tao_phan_hoi(result, benh)
+    out["url_phieu"] = url_phieu(ma_bn)
+    out["nguon"] = "dan_tay"
+    return out
+
+
+def _tao_phan_hoi(result: dict, benh: str) -> Dict[str, Any]:
     answers = parse_answers(result.get("answers"))
     khong_doc_duoc = bool(result.get("answers")) and not answers
     ngay_sinh = _txt(result.get("patientBirthDay"))[:10]

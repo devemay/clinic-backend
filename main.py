@@ -21,6 +21,7 @@ from models import (AACase, AAFollowUp, AGACase, AGAFollowUp, NonScarCase, NonSc
 from storage import get_storage, refresh_url, nhan_dang_anh, chuyen_webp
 from starlette.concurrency import run_in_threadpool
 import survey
+import tram
 import bao_cao
 import config
 
@@ -784,6 +785,70 @@ def survey_ping():
     để bác sĩ chỉ cần mở địa chỉ này trên trình duyệt là biết nút Đồng bộ có chạy được không.
     """
     return survey.ping()
+
+
+# ---------- máy trạm ở phòng khám (chuyển tiếp phiếu khảo sát, xem tram.py) ----------
+def _kiem_khoa_tram(khoa: Optional[str]):
+    import hmac as _hmac
+    if not config.TRAM_KHOA:
+        raise HTTPException(status_code=404, detail="Máy chủ chưa bật chế độ máy trạm (thiếu biến TRAM_KHOA).")
+    if not khoa or not _hmac.compare_digest(khoa.strip(), config.TRAM_KHOA):
+        raise HTTPException(status_code=401, detail="Sai khoá máy trạm.")
+
+
+@app.get("/tram/cho-viec")
+def tram_cho_viec(may: str = "", phien_ban: str = "", ma_tram: str = "", x_tram_khoa: Optional[str] = Header(None)):
+    """Máy trạm hỏi việc. Giữ kết nối tối đa ~25 giây; có việc là trả ngay.
+    Trả kèm địa chỉ bệnh viện + mã phòng để đổi được trên Render mà không phải sửa máy trạm."""
+    _kiem_khoa_tram(x_tram_khoa)
+    viec = tram.cho_viec(may, phien_ban, ma_tram=ma_tram)
+    return {"viec": viec, "api_bv": config.SURVEY_API_BASE, "phong": config.SURVEY_ROOM_ID,
+            "cho_giay": tram.CHO_VIEC_GIAY}
+
+
+class TramKetQua(BaseModel):
+    id: str
+    ma_http: Optional[int] = None
+    noi_dung: Optional[str] = None
+    loi: Optional[str] = None
+    ma_tram: Optional[str] = None
+    may: Optional[str] = None
+
+
+@app.post("/tram/ket-qua")
+def tram_ket_qua(body: TramKetQua, x_tram_khoa: Optional[str] = Header(None)):
+    _kiem_khoa_tram(x_tram_khoa)
+    if body.noi_dung and len(body.noi_dung) > 3_000_000:
+        body.noi_dung, body.loi = None, "Phiếu quá lớn"
+    nhan = tram.nop_ket_qua(body.id, body.model_dump() if hasattr(body, "model_dump") else body.dict(),
+                            ma_tram=body.ma_tram or "", ten_may=body.may or "")
+    return {"ok": True, "con_nguoi_cho": nhan}
+
+
+@app.get("/tram/trang-thai")
+def tram_trang_thai(doctor: Doctor = Depends(get_current_doctor)):
+    """Cho giao diện biết máy trạm đang bật hay tắt (hiện gợi ý dán tay khi tắt)."""
+    return tram.trang_thai()
+
+
+class DanPhieu(BaseModel):
+    noi_dung: str
+
+
+@app.get("/survey/{ma_bn}/lien-ket")
+def survey_lien_ket(ma_bn: str, doctor: Doctor = Depends(get_current_doctor)):
+    """Đường dẫn phiếu trên hệ thống bệnh viện, để trình duyệt của bác sĩ tự mở (dán tay)."""
+    return {"url": survey.url_phieu(ma_bn)}
+
+
+@app.post("/survey/{ma_bn}/dan-tay")
+def survey_dan_tay(ma_bn: str, body: DanPhieu, benh: str = "", doctor: Doctor = Depends(get_current_doctor)):
+    """Nhận nội dung phiếu bác sĩ tự copy từ trình duyệt, xử lý y hệt khi đồng bộ tự động."""
+    try:
+        return survey.tu_noi_dung_dan(ma_bn, body.noi_dung, benh)
+    except Exception as e:
+        return {"found": False, "co_khao_sat": False, "khao_sat": None, "mapped": {}, "dlqi_tong": None,
+                "loi": f"Lỗi khi xử lý phiếu dán vào: {type(e).__name__}: {e}"}
 
 
 @app.get("/survey/{ma_bn}")
