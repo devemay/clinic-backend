@@ -797,11 +797,14 @@ def _kiem_khoa_tram(khoa: Optional[str]):
 
 
 @app.get("/tram/cho-viec")
-def tram_cho_viec(may: str = "", phien_ban: str = "", ma_tram: str = "", x_tram_khoa: Optional[str] = Header(None)):
+def tram_cho_viec(may: str = "", phien_ban: str = "", ma_tram: str = "", cho: float = -1,
+                  x_tram_khoa: Optional[str] = Header(None)):
     """Máy trạm hỏi việc. Giữ kết nối tối đa ~25 giây; có việc là trả ngay.
     Trả kèm địa chỉ bệnh viện + mã phòng để đổi được trên Render mà không phải sửa máy trạm."""
     _kiem_khoa_tram(x_tram_khoa)
-    viec = tram.cho_viec(may, phien_ban, ma_tram=ma_tram)
+    # cho=0: máy trạm vừa bật / vừa kết nối lại -> trả lời ngay để máy trạm báo "đã kết nối" tức thì
+    so_giay = tram.CHO_VIEC_GIAY if cho < 0 else max(0.0, min(float(cho), tram.CHO_VIEC_GIAY))
+    viec = tram.cho_viec(may, phien_ban, cho_giay=so_giay, ma_tram=ma_tram)
     return {"viec": viec, "api_bv": config.SURVEY_API_BASE, "phong": config.SURVEY_ROOM_ID,
             "cho_giay": tram.CHO_VIEC_GIAY}
 

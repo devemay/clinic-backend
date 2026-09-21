@@ -10,6 +10,7 @@ Dùng urllib của thư viện chuẩn Python — KHÔNG thêm thư viện mới
 tránh phải cài thêm gói trên Render.
 """
 
+import io
 import json
 import threading
 import time
@@ -23,6 +24,32 @@ import tram
 
 
 # ---------- 1. Gọi API bệnh viện ----------
+
+def loi_tu_benh_vien(ma_http: int, than) -> str:
+    """Đổi lỗi HTTP của hệ thống bệnh viện thành câu dễ hiểu.
+
+    api.dalieu.vn dùng khung ASP.NET Boilerplate: lỗi nghiệp vụ (VD không tìm thấy bệnh nhân,
+    bệnh nhân chưa có lượt khám ở phòng này...) được trả về dạng HTTP 500 kèm JSON
+    {"success": false, "error": {"message": "...", "details": "..."}}. Chỉ báo "lỗi 500" thì bác sĩ
+    không biết vì sao — ở đây lấy nguyên câu thông báo của bệnh viện ra hiển thị."""
+    if isinstance(than, bytes):
+        than = than.decode("utf-8", errors="replace")
+    loi = None
+    try:
+        body = json.loads(than or "", parse_constant=lambda _c: None)
+        loi = body.get("error") if isinstance(body, dict) else None
+    except ValueError:
+        pass
+    if isinstance(loi, dict):
+        thong_bao = " ".join(str(loi.get("message") or "").split())
+        chi_tiet = " ".join(str(loi.get("details") or "").split())
+        if chi_tiet and chi_tiet != thong_bao:
+            thong_bao = f"{thong_bao} — {chi_tiet}" if thong_bao else chi_tiet
+        if thong_bao:
+            return f"Hệ thống bệnh viện báo: “{thong_bao[:300]}” (mã lỗi {ma_http})"
+    return (f"Hệ thống bệnh viện trả lỗi {ma_http}. Thử mở phiếu bằng trình duyệt (nút “Dán phiếu thủ công” "
+            "→ “Mở phiếu khảo sát”) để xem bệnh viện báo gì.")
+
 
 def url_phieu(ma_bn: str) -> str:
     """Đường dẫn phiếu khảo sát trên hệ thống bệnh viện — dùng cho nút "Mở phiếu" (dán tay):
@@ -49,7 +76,9 @@ def _call_api(ma_bn: str, han_giay: Optional[float] = None) -> Optional[dict]:
         # Nhờ máy trạm ở phòng khám đọc hộ (bệnh viện chặn máy chủ ở nước ngoài)
         kq = tram.hoi(ma_bn, han_giay if han_giay is not None else config.SURVEY_DEADLINE)
         if kq["ma_http"] != 200:
-            raise urllib.error.HTTPError(url, kq["ma_http"] or 502, "máy trạm báo lỗi", None, None)
+            # giữ nguyên nội dung lỗi bệnh viện gửi kèm (thường có câu thông báo) để hiện cho bác sĩ
+            raise urllib.error.HTTPError(url, kq["ma_http"] or 502, "bệnh viện báo lỗi", None,
+                                         io.BytesIO((kq["noi_dung"] or "").encode("utf-8")))
         raw = kq["noi_dung"]
     else:
         req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "benh-an-nghien-cuu/1.0"})
@@ -105,7 +134,11 @@ def _fetch_blocking(ma_bn: str, deadline: float) -> Dict[str, Any]:
         except tram.TramKhongSan as e:
             return {"found": False, "result": None, "loi": str(e)}
         except urllib.error.HTTPError as e:
-            last_error = f"Hệ thống bệnh viện trả lỗi {e.code}"
+            try:
+                than = e.read()
+            except Exception:
+                than = b""
+            last_error = loi_tu_benh_vien(e.code, than)
             continue
         except urllib.error.URLError as e:
             return {"found": False, "result": None, "loi": f"Không kết nối được hệ thống bệnh viện ({e.reason})"}
@@ -848,7 +881,9 @@ def tu_noi_dung_dan(ma_bn: str, noi_dung: str, benh: str) -> Dict[str, Any]:
         return loi("Nội dung dán vào không phải phiếu khảo sát.")
     if "result" in body:
         if body.get("success") is False:
-            return loi("Hệ thống bệnh viện báo lỗi trong trang vừa mở — thử mở lại phiếu.")
+            tb = loi_tu_benh_vien(500, json.dumps(body, ensure_ascii=False))
+            return loi(tb.replace(" (mã lỗi 500)", "") if tb.startswith("Hệ thống bệnh viện báo:")
+                       else "Hệ thống bệnh viện báo lỗi trong trang vừa mở — thử mở lại phiếu.")
         result = body.get("result")
     elif "patientCode" in body or "answers" in body:
         result = body
