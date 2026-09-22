@@ -734,6 +734,41 @@ def _tuoi_khoi_phat(out: dict, a: dict) -> None:
         out["tuoiKhoiPhat"] = str(age)
 
 
+# Nghề nghiệp / trình độ học vấn: hệ thống bệnh viện trả dạng MÃ ở phần đầu hồ sơ
+# (result.occupation, result.educationLevel), không nằm trong answers.
+# Chỉ đổi những mã đã gặp trong phiếu thật; mã khác (hoặc "other") để trống cho bác sĩ tự chọn.
+# Bệnh án AA và TTM có bộ lựa chọn khác nhau.
+NGHE_NGHIEP = {
+    "aa": {"office": "Lao động trí óc", "student": "Học sinh/sinh viên", "manual": "Lao động chân tay",
+           "worker": "Lao động chân tay", "farmer": "Lao động chân tay", "retired": "Mất sức LĐ/hưu trí"},
+    "ttm": {"office": "Nhân viên văn phòng", "student": "Học sinh / Sinh viên", "manual": "Lao động chân tay",
+            "worker": "Lao động chân tay", "farmer": "Lao động chân tay", "housewife": "Nội trợ"},
+}
+TRINH_DO = {
+    "aa": {"primary": "Phổ thông và dưới", "secondary": "Phổ thông và dưới", "highschool": "Phổ thông và dưới",
+           "university": "Đại học và sau đại học", "college": "Đại học và sau đại học",
+           "postgraduate": "Đại học và sau đại học"},
+    "ttm": {"primary": "Tiểu học", "secondary": "THCS", "highschool": "THPT",
+            "university": "Đại học / Sau ĐH", "postgraduate": "Đại học / Sau ĐH"},
+}
+
+
+def _nghe_trinh_do(out: dict, result: dict, benh: str) -> None:
+    nghe = NGHE_NGHIEP[benh].get(_txt(result.get("occupation")))
+    if nghe:
+        out["ngheNghiep"] = nghe
+    td = TRINH_DO[benh].get(_txt(result.get("educationLevel")))
+    if td:
+        out["trinhDo"] = td
+
+
+def _sdt(v) -> Optional[str]:
+    """Chỉ nhận số điện thoại trông hợp lệ (8-15 chữ số), tránh điền rác vào hồ sơ."""
+    s = _txt(v)
+    so = "".join(c for c in s if c.isdigit())
+    return s if 8 <= len(so) <= 15 and all(c.isdigit() or c in "+ .-()" for c in s) else None
+
+
 def map_aa(a: dict, result: dict) -> Dict[str, Any]:
     out = _map_common(a, result)
 
@@ -779,6 +814,7 @@ def map_aa(a: dict, result: dict) -> Dict[str, Any]:
         out["thuocDangDung"] = meds
 
     _tuoi_khoi_phat(out, a)
+    _nghe_trinh_do(out, result, "aa")
     _ghi_bang(out, a, "tienSuBanThan", (
         ("Viêm da cơ địa", ("mh_atopicDermatitis",), None),
         ("Viêm mũi dị ứng", ("mh_allergicRhinitis",), None),
@@ -981,6 +1017,7 @@ def map_ttm(a: dict, result: dict) -> Dict[str, Any]:
     if onset:
         out["thoiGianMacBenh"] = onset
     _tuoi_khoi_phat(out, a)
+    _nghe_trinh_do(out, result, "ttm")
 
     _ghi_bang(out, a, "tienSuBanThan", (
         ("Bệnh lý tâm thần (lo âu, trầm cảm, OCD, ADHD...)",
@@ -1176,6 +1213,9 @@ def _tao_phan_hoi(result: dict, benh: str) -> Dict[str, Any]:
         "ngay_sinh": ngay_sinh or None,
         "nam_sinh": int(ngay_sinh[:4]) if ngay_sinh[:4].isdigit() else None,
         "gioi_tinh": _gioi_tinh(answers),
+        "dan_toc": " ".join(_txt(result.get("ethnicName")).split()) or None,
+        "dia_chi": " ".join(_txt(result.get("address")).split()) or None,
+        "sdt": _sdt(result.get("phone")),
         "ngay_kham": _txt(result.get("treatmentDate"))[:10] or None,
         "ma_luot_kham": result.get("treatmentCode"),
         "co_khao_sat": bool(answers),
