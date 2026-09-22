@@ -303,6 +303,36 @@ def dlqi_total(a: dict) -> Optional[int]:
     return int(sum(vals))
 
 
+# Thang MGH-HPS (Massachusetts General Hospital Hairpulling Scale) — phần 2 của phiếu tật nhổ tóc.
+# Thứ tự khớp đúng 7 câu q1..q7 trong bảng MGH-HPS của bệnh án TTM.
+MGH_KEYS = [
+    "mgh_urgeFrequency",   # q1 tần suất thôi thúc
+    "mgh_urgeIntensity",   # q2 cường độ thôi thúc
+    "mgh_control",         # q3 khả năng kiểm soát
+    "mgh_distress",        # q4 đau khổ
+    "mgh_timeSpent",       # q5 thời gian nhổ tóc
+    "mgh_socialImpact",    # q6 ảnh hưởng xã hội
+    "mgh_workImpact",      # q7 ảnh hưởng công việc/học tập
+]
+
+
+def mgh_total(a: dict) -> Optional[int]:
+    """Tổng điểm MGH-HPS 0-28. Chỉ tính khi bệnh nhân trả lời ĐỦ 7 câu (giống bệnh án TTM),
+    thiếu câu nào thì trả None để không hiện một con số sai."""
+    if not isinstance(a, dict):
+        return None
+    vals = [_num(a.get(k)) for k in MGH_KEYS]
+    if any(v is None for v in vals):
+        return None
+    return int(sum(vals))
+
+
+def muc_do_mgh(t: Optional[int]) -> Optional[str]:
+    if t is None:
+        return None
+    return "Nhẹ" if t <= 7 else ("Trung bình" if t <= 15 else "Nặng")
+
+
 # ---------- 3. Tóm tắt lịch sử điều trị thành đoạn văn cho ô "Bệnh sử các đợt trước" ----------
 
 # Phiếu lưu tần suất dưới dạng mã tiếng Anh — dịch sang tiếng Việt cho bác sĩ dễ đọc.
@@ -403,9 +433,87 @@ _PRE_EVENTS = [
 ]
 
 _HAIR_HABITS = [
-    ("habit_tightHairstyle", "buộc tóc đuôi ngựa/tết/xoăn/nối tóc/tóc giả"),
+    ("habit_tightHairstyle", "kiểu tóc tạo áp lực (buộc/tết/búi chặt)"),
     ("habit_heat", "dùng nhiệt trực tiếp lên tóc (sấy, ép/uốn nóng)"),
     ("habit_chemicals", "dùng hoá chất cho tóc (nhuộm, duỗi, ép)"),
+    ("habit_chemicalRelaxer", "hoá chất làm thẳng/duỗi tóc"),
+    ("habit_wigExtensions", "tóc giả / nối tóc"),
+    ("habit_dyeBleach", "thuốc nhuộm / thuốc tẩy tóc"),
+    ("habit_scalpOil", "thoa dầu/mỡ lên da đầu thường xuyên"),
+]
+
+# Phần "bệnh nhân tự nhận thấy" (mục 2 mở rộng của phiếu — chủ yếu phục vụ rụng tóc sẹo).
+# Đây là bệnh nhân TỰ KHAI, không phải kết quả khám -> chỉ ghi vào đoạn tóm tắt,
+# không tự tick vào các ô khám thực thể.
+_FIRST_SITE = [
+    ("obs_firstSite_vertex", "đỉnh"),
+    ("obs_firstSite_frontal", "trán"),
+    ("obs_firstSite_temporal", "thái dương"),
+    ("obs_firstSite_occipital", "chẩm/gáy"),
+    ("obs_firstSite_diffuse", "lan toả"),
+    ("obs_firstSite_other", "khác"),
+]
+_PRIOR_AT_SITE = [
+    ("obs_prior_folliculitis", "Viêm nang lông", "viêm nang lông"),
+    ("obs_prior_infection", "Nhiễm trùng", "nhiễm trùng"),
+    ("obs_prior_autoimmune", "Tự miễn", "bệnh tự miễn"),
+    ("obs_prior_radiationBurnTrauma", "Sau tia xạ / bỏng / chấn thương", "tia xạ/bỏng/chấn thương"),
+    ("obs_prior_drug", "Thuốc", "dùng thuốc"),
+    ("obs_prior_unknown", "Không rõ", "không rõ"),
+    ("obs_prior_other", "Khác", "khác"),
+]
+_LESION_PROGRESS = {"spreading": "Lan rộng", "stable": "Dừng lại"}
+_SELF_SEEN = [
+    ("obs_shinyScalp", "da đầu vùng rụng nhẵn bóng"),
+    ("obs_tuftedHairs", "nhiều sợi tóc mọc chung 1 lỗ (búi tóc)"),
+    ("obs_pustulesDischarge", "mụn mủ / chảy dịch vùng rụng"),
+    ("obs_eyebrowThinning", "lông mày thưa/rụng"),
+    ("obs_eyelashThinning", "lông mi thưa/rụng"),
+    ("obs_frontalRecession", "đường chân tóc trán lùi dần"),
+]
+
+# Phiếu tật nhổ tóc (ttmAnswers) — bảng đổi đáp án sang đúng lựa chọn trong bệnh án TTM
+TTM_WHO = {"self": "Tự nhổ", "other": "Người khác nhổ hộ", "both": "Cả hai"}
+TTM_FREQ = {"daily": "Hàng ngày", "fewPerWeek": "Vài lần/tuần", "occasional": "Thỉnh thoảng"}
+TTM_ONSET = {"stress": "Sau stress", "afterStress": "Sau stress", "unknown": "Không rõ lý do",
+             "habit": "Thói quen dần dần", "gradual": "Thói quen dần dần", "other": "Khác"}
+TTM_TIME = [
+    ("ttm_time_morning", "Sáng"), ("ttm_time_noon", "Trưa"), ("ttm_time_evening", "Tối"),
+    ("ttm_time_night", "Đêm"), ("ttm_time_noFixed", "Không theo giờ cố định"),
+]
+TTM_SITUATION = [
+    ("ttm_sit_screen", "Xem TV / điện thoại"), ("ttm_sit_reading", "Đọc sách / học bài"),
+    ("ttm_sit_bed", "Nằm trên giường"), ("ttm_sit_stress", "Khi căng thẳng / lo âu"),
+    ("ttm_sit_bored", "Khi buồn chán"), ("ttm_sit_alone", "Khi một mình"),
+    ("ttm_sit_none", "Không theo tình huống cụ thể"), ("ttm_sit_other", "Khác"),
+]
+TTM_AWARENESS = [  # đúng tên dòng bảng "Nhận thức và kiểu nhổ tóc" (NHAN_THUC_TTM)
+    ("ttm_selfAware", "BN biết / nhận thức / thừa nhận hành vi nhổ tóc"),
+    ("ttm_familyWitnessed", "Gia đình quan sát thấy hành vi nhổ tóc"),
+    ("ttm_automatic", "Nhổ tóc VÔ THỨC khi làm việc khác (đọc sách, xem TV...)"),
+    ("ttm_focused", "Nhổ tóc CÓ CHỦ ĐÍCH (thôi thúc, cưỡng bức)"),
+    ("ttm_reliefAfter", "Cảm giác thoải mái / thoả mãn SAU khi nhổ tóc"),
+    ("ttm_tensionBefore", "Căng thẳng / bồn chồn TRƯỚC khi nhổ (tension buildup)"),
+    ("ttm_guiltAfter", "Cảm giác tội lỗi / xấu hổ sau nhổ tóc"),
+]
+TTM_AFTER = [  # HANH_VI_SAU_NHO_TTM
+    ("ttm_inspectRoot", "Kiểm tra chân tóc (soi, ngửi, sờ)"),
+    ("ttm_biteHair", "Cắn / nhai thân tóc"),
+    ("ttm_eatHair", "Ăn tóc (trichophagia)"),
+]
+TTM_BFRB = [  # BFRB_TTM
+    ("bfrb_nailBiting", "Cắn móng tay / da quanh móng (onychophagia)"),
+    ("bfrb_eyebrowPulling", "Nhổ lông mày"),
+    ("bfrb_eyelashPulling", "Nhổ lông mi"),
+    ("bfrb_bodyHairPulling", "Nhổ lông vùng kín / nách / chân"),
+    ("bfrb_skinPicking", "Gãi / cào da"),
+    ("bfrb_lipCheekBiting", "Cắn môi / má trong miệng"),
+]
+# 3 câu gần với tiêu chuẩn DSM-5 — CHỈ ghi vào tóm tắt, không tự chấm "Đạt" (bác sĩ đánh giá).
+TTM_DSM_HINTS = [
+    ("ttm_visibleLoss", "nhổ tóc tới mức thấy rõ vùng rụng"),
+    ("ttm_failedToStop", "đã cố ngừng/giảm nhổ tóc nhưng không được"),
+    ("ttm_distressImpairment", "nhổ tóc gây khó chịu/ảnh hưởng sinh hoạt, công việc"),
 ]
 
 # Các mục thể hiện bệnh nhân ĐÃ THỰC SỰ điều trị (khác với "đã đi khám bác sĩ khác")
@@ -475,6 +583,45 @@ def build_history_text(a: dict) -> str:
     shampoo = _txt(a.get("shampoo"))
     if wash or shampoo:
         lines.append(f"Gội đầu {wash or '?'} lần/tuần" + (f", dầu gội: {shampoo}" if shampoo else ""))
+
+    if _is_yes(a, "habit_noSpecialCare") and not habits:
+        lines.append("Thói quen chăm sóc tóc: không chăm sóc gì đặc biệt")
+
+    age = _num(a.get("hairLossOnsetAge"))
+    if age is not None:
+        lines.append(f"Tuổi bắt đầu rụng tóc: {age}")
+    sites = [label for key, label in _FIRST_SITE if a.get(key) is True]
+    other_site = _txt(a.get("obs_firstSite_other_text"))
+    if other_site:
+        sites = [x for x in sites if x != "khác"] + [other_site]
+    if sites:
+        lines.append("Vị trí rụng đầu tiên (bệnh nhân tự khai): " + ", ".join(sites))
+    progress = _LESION_PROGRESS.get(_txt(a.get("obs_lesionProgress")))
+    if progress:
+        lines.append(f"Vùng rụng tóc từ lúc khởi phát tới nay: {progress.lower()}")
+    prior = [txt for key, _o, txt in _PRIOR_AT_SITE if a.get(key) is True]
+    prior_other = _txt(a.get("obs_prior_other_text"))
+    if prior_other:
+        prior = [x for x in prior if x != "khác"] + [prior_other]
+    if prior:
+        lines.append("Tình trạng tại vùng rụng trước khi rụng tóc: " + ", ".join(prior))
+    seen_self = [label for key, label in _SELF_SEEN if _is_yes(a, key)]
+    if seen_self:
+        lines.append("Bệnh nhân tự nhận thấy: " + ", ".join(seen_self))
+
+    if _is_yes(a, "ttm_pullsHair"):
+        ttm = []
+        who = TTM_WHO.get(_txt(a.get("ttm_who")))
+        if who:
+            ttm.append(who.lower())
+        freq = TTM_FREQ.get(_txt(a.get("ttm_frequency")))
+        if freq:
+            ttm.append(freq.lower())
+        ttm += [label for key, label in TTM_DSM_HINTS if _is_yes(a, key)]
+        lines.append("Có hành vi nhổ tóc" + (f" ({'; '.join(ttm)})" if ttm else ""))
+        t = mgh_total(a)
+        if t is not None:
+            lines.append(f"Điểm MGH-HPS bệnh nhân tự chấm: {t}/28 ({muc_do_mgh(t).lower()})")
 
     locs = [label for key, label in _LOC_LABELS.items() if a.get(key) is True]
     if locs:
@@ -566,6 +713,27 @@ def _family_hairloss(a: dict):
     return status, "; ".join(details)
 
 
+def _ghi_bang(out: dict, a: dict, root: str, rows, ba_muc: bool = True) -> None:
+    """Điền bảng Có/Không(/Không biết) kiểu tienSuBanThan.<dòng>.status.
+    rows: [(tên dòng trong bệnh án, (các key trong phiếu), key chi tiết hoặc None)].
+    ba_muc=False với bảng chỉ có Có/Không -> bỏ qua đáp án "Không rõ" để bác sĩ tự hỏi lại."""
+    for row, keys, detail_key in rows:
+        status = _yn_or_none(a, *keys)
+        if status == "Không biết" and not ba_muc:
+            status = None
+        if status:
+            out[f"{root}.{row}.status"] = status
+            detail = _txt(a.get(detail_key)) if detail_key else ""
+            if detail and status == "Có":
+                out[f"{root}.{row}.detail"] = detail
+
+
+def _tuoi_khoi_phat(out: dict, a: dict) -> None:
+    age = _num(a.get("hairLossOnsetAge"))
+    if age is not None:
+        out["tuoiKhoiPhat"] = str(age)
+
+
 def map_aa(a: dict, result: dict) -> Dict[str, Any]:
     out = _map_common(a, result)
 
@@ -610,16 +778,25 @@ def map_aa(a: dict, result: dict) -> Dict[str, Any]:
     if meds:
         out["thuocDangDung"] = meds
 
-    for row, keys, detail_key in (
+    _tuoi_khoi_phat(out, a)
+    _ghi_bang(out, a, "tienSuBanThan", (
+        ("Viêm da cơ địa", ("mh_atopicDermatitis",), None),
+        ("Viêm mũi dị ứng", ("mh_allergicRhinitis",), None),
+        ("Hen phế quản", ("mh_asthma",), None),
+        ("Hashimoto", ("mh_hashimoto",), None),
+        ("Basedow", ("mh_basedow",), None),
+        ("Bạch biến", ("mh_vitiligo",), None),
         ("Dị ứng thuốc", ("drugAllergy",), "drugAllergy_list"),
         ("Vảy nến", ("mh_psoriasis",), None),
-    ):
-        status = _yn_or_none(a, *keys)
-        if status:
-            out[f"tienSuBanThan.{row}.status"] = status
-            detail = _txt(a.get(detail_key)) if detail_key else ""
-            if detail:
-                out[f"tienSuBanThan.{row}.detail"] = detail
+        ("Bệnh Celiac", ("mh_celiac",), None),
+        ("Bệnh tự miễn khác", ("mh_lupus",), None),
+    ))
+    _ghi_bang(out, a, "tienSuGiaDinh", (
+        ("Rụng tóc từng mảng", ("fam_alopecia_areata",), None),
+        ("Bệnh lý cơ địa", ("fam_atopy",), None),
+        ("Bệnh lý tự miễn", ("fam_autoimmune",), None),
+        ("Bạch biến", ("fam_vitiligo",), None),
+    ))
     return out
 
 
@@ -727,61 +904,126 @@ def map_nonscar(a: dict, result: dict) -> Dict[str, Any]:
 
 
 def map_sa(a: dict, result: dict) -> Dict[str, Any]:
-    """Rụng tóc sẹo. Bộ câu hỏi hiện tại của bệnh viện chưa hỏi riêng cho bệnh này —
-    chỉ ánh xạ được phần dùng chung. Sẽ mở rộng khi phiếu khảo sát mới được dựng."""
-    out: Dict[str, Any] = {}
-    ngay_kham = _txt(result.get("treatmentDate"))[:10]
-    if ngay_kham:
-        out["ngayKham"] = ngay_kham
-    onset = _onset_text(a)
-    if onset:
-        out["thoiGianMacBenh"] = onset
-    history = build_history_text(a)
-    if history:
-        out["benhSuTruoc"] = history
-
-    co_nang = []
-    if _is_yes(a, "scalp_itch"):
-        co_nang.append("Ngứa")
-    if _is_yes(a, "scalp_pain"):
-        co_nang.append("Đau")
-    if co_nang:
-        out["trieuChungCoNang"] = co_nang
-    elif all(_yn(a.get(k)) == "Không" for k in ("scalp_itch", "scalp_pain")):
-        out["trieuChungCoNang"] = ["Không triệu chứng"]
-
-    # LPPAI: mức độ ngứa/đau bệnh nhân tự chấm (thang 0-10) nếu phiếu có hỏi
-    for field, key in (("lppai.ngua", "scalp_itch_scale"), ("lppai.dau", "scalp_pain_scale")):
-        v = _num(a.get(key))
-        if v is not None:
-            out[field] = v
-
-    for row, keys, detail_key in (
-        ("Viêm da cơ địa / Vảy nến", ("mh_psoriasis",), None),
-        ("Bỏng / chấn thương da đầu / tia xạ vùng đầu", ("pre_majorSurgery",), None),
-    ):
-        status = _yn_or_none(a, *keys)
-        if status:
-            out[f"tienSuBanThan.{row}.status"] = status
-    return out
-
-
-def map_ttm(a: dict, result: dict) -> Dict[str, Any]:
-    """Tật nhổ tóc. Phiếu hiện tại chưa có phần hành vi nhổ tóc — chỉ ánh xạ phần dùng chung."""
+    """Rụng tóc sẹo. Phiếu mở rộng (09/2026) đã có đủ phần tiền sử, thói quen chăm sóc tóc,
+    bệnh cảnh trước khi rụng — ánh xạ vào đúng các bảng của bệnh án rụng tóc sẹo.
+    Vị trí khởi phát / tổn thương ngoài da đầu / lùi chân tóc là phần KHÁM -> không tự điền."""
     out = _map_common(a, result)
     onset = _onset_text(a)
     if onset:
         out["thoiGianMacBenh"] = onset
-    for row, keys, detail_key in (
+    _tuoi_khoi_phat(out, a)
+
+    yeu_to = [opt for key, opt, _t in _PRIOR_AT_SITE if a.get(key) is True]
+    if yeu_to:
+        out["yeuToKhoiPhat"] = yeu_to
+    progress = _LESION_PROGRESS.get(_txt(a.get("obs_lesionProgress")))
+    if progress:
+        out["tienTrienTonThuong"] = progress
+
+    co_nang = []
+    for key, label in (("scalp_itch", "Ngứa"), ("scalp_pain", "Đau"),
+                       ("scalp_burning", "Rát bỏng"), ("scalp_tightness", "Căng da")):
+        if _is_yes(a, key):
+            co_nang.append(label)
+    if co_nang:
+        out["trieuChungCoNang"] = co_nang
+    elif all(_yn(a.get(k)) == "Không" for k in ("scalp_itch", "scalp_pain")) and \
+            not any(_is_yes(a, k) for k in ("scalp_burning", "scalp_tightness")):
+        out["trieuChungCoNang"] = ["Không triệu chứng"]
+
+    # LPPAI: mức độ ngứa/đau/căng da bệnh nhân tự chấm (thang 0-10) nếu phiếu có hỏi
+    for field, key in (("lppai.ngua", "scalp_itch_scale"), ("lppai.dau", "scalp_pain_scale"),
+                       ("lppai.cangDa", "scalp_tightness_scale")):
+        v = _num(a.get(key))
+        if v is not None:
+            out[field] = v
+
+    if _any_yes(a, _TREATED_KEYS):
+        out["dieuTriTruocDoStatus"] = "Có"
+    elif any(_yn(a.get(k)) is not None for k in _TREATED_KEYS):
+        out["dieuTriTruocDoStatus"] = "Không"
+
+    _ghi_bang(out, a, "tienSuBanThan", (
+        ("Lupus ban đỏ hệ thống (SLE)", ("mh_lupus", "pre_systemicLupusErythematosus"), None),
+        ("Lichen phẳng ngoài da đầu (thân mình/miệng/móng)", ("mh_lichenPlanus",), None),
+        ("Viêm tuyến giáp tự miễn (Hashimoto/Basedow)", ("mh_hashimoto", "mh_basedow"), None),
+        ("Bạch biến", ("mh_vitiligo",), None),
+        ("Viêm nang lông tái phát / nhọt da đầu", ("mh_recurrentFolliculitis",), None),
+        ("Viêm da tiết bã nặng / Rosacea", ("mh_seborrheicRosacea",), None),
+        ("Hidradenitis suppurativa / Acne inversa", ("mh_hidradenitis",), None),
+        ("Viêm da cơ địa / Vảy nến", ("mh_atopicDermatitis", "mh_psoriasis"), None),
+        ("Bỏng / chấn thương da đầu / tia xạ vùng đầu", ("mh_headBurnTraumaRadiation",), None),
+    ))
+    _ghi_bang(out, a, "thoiQuenChamSocToc", (
+        ("Hóa chất làm thẳng/duỗi tóc", ("habit_chemicalRelaxer",), None),
+        ("Tóc giả / nối tóc / weave / wigs", ("habit_wigExtensions",), None),
+        ("Kiểu tóc tạo áp lực (tết chặt, búi chặt, cornrow)", ("habit_tightHairstyle",), None),
+        ("Nhiệt thường xuyên (duỗi, uốn, sấy)", ("habit_heat",), None),
+        ("Thuốc nhuộm / thuốc tẩy tóc", ("habit_dyeBleach",), None),
+        ("Dầu/mỡ thoa da đầu thường xuyên", ("habit_scalpOil",), None),
+        ("Không chăm sóc đặc biệt", ("habit_noSpecialCare",), None),
+    ), ba_muc=False)
+    _ghi_bang(out, a, "tienSuGiaDinh", (
+        ("Rụng tóc sẹo", ("fam_scarring_alopecia",), None),
+        ("Lupus / bệnh tự miễn", ("fam_autoimmune", "fam_thyroid_anemia_pcos_lupus"), None),
+        ("Bệnh lý cơ địa (VDCĐ, hen, dị ứng)", ("fam_atopy",), None),
+        ("Bệnh lý nang lông / mụn trứng cá nặng", ("fam_folliculitis_acne",), None),
+    ))
+    return out
+
+
+def map_ttm(a: dict, result: dict) -> Dict[str, Any]:
+    """Tật nhổ tóc. Dùng phần chung của phiếu rụng tóc + phiếu riêng về tật nhổ tóc
+    (ttmAnswers: hành vi nhổ tóc, MGH-HPS, BFRBs) nếu bệnh nhân đã điền.
+    Bảng tiêu chuẩn DSM-5 và vị trí tổn thương là phần bác sĩ đánh giá -> không tự điền."""
+    out = _map_common(a, result)
+    onset = _onset_text(a)
+    if onset:
+        out["thoiGianMacBenh"] = onset
+    _tuoi_khoi_phat(out, a)
+
+    _ghi_bang(out, a, "tienSuBanThan", (
+        ("Bệnh lý tâm thần (lo âu, trầm cảm, OCD, ADHD...)",
+         ("mh_anxiety", "mh_depression", "mh_ocd", "mh_adhd"), None),
+        ("Tiền sử hen phế quản", ("mh_asthma",), None),
         ("Tiền sử dị ứng thuốc / thức ăn", ("drugAllergy",), "drugAllergy_list"),
-        ("Bệnh lý tâm thần (lo âu, trầm cảm, OCD, ADHD...)", ("mh_anxiety", "mh_depression"), None),
-    ):
-        status = _yn_or_none(a, *keys)
-        if status:
-            out[f"tienSuBanThan.{row}.status"] = status
-            detail = _txt(a.get(detail_key)) if detail_key else ""
-            if detail:
-                out[f"tienSuBanThan.{row}.detail"] = detail
+        ("Đang có thai / cho con bú (nữ)", ("mh_pregnantOrBreastfeeding",), None),
+    ), ba_muc=False)
+    _ghi_bang(out, a, "tienSuGiaDinh", (
+        ("Tật nhổ tóc / nhổ lông (BFRBs)", ("fam_trichotillomania",), None),
+        ("Rối loạn tâm thần kinh (lo âu, OCD, Tourette, ADHD)", ("fam_psychiatric",), None),
+        ("Rụng tóc (AA, FPHL, RTS...)", ("fam_alopecia_areata", "fam_maleHairLoss",
+                                         "fam_femaleHairLoss", "fam_scarring_alopecia"), None),
+    ), ba_muc=False)
+
+    # ---- Phiếu riêng tật nhổ tóc ----
+    who = TTM_WHO.get(_txt(a.get("ttm_who")))
+    if who:
+        out["aiNhoToc"] = who
+    onset_ctx = TTM_ONSET.get(_txt(a.get("ttm_onsetContext")))
+    if onset_ctx:
+        out["hoanCanhKhoiPhat"] = onset_ctx
+    freq = TTM_FREQ.get(_txt(a.get("ttm_frequency")))
+    if freq:
+        out["tanSuatNhoToc"] = freq
+    times = [label for key, label in TTM_TIME if a.get(key) is True]
+    if times:
+        out["thoiDiemTrongNgay"] = times
+    sits = [label for key, label in TTM_SITUATION if a.get(key) is True]
+    if sits:
+        out["tinhHuongKichHoat"] = sits
+        other = _txt(a.get("ttm_sit_other_text"))
+        if other and "Khác" in sits:
+            out["tinhHuongKhac"] = other
+    # Bảng Có/Không: chỉ điền khi bệnh nhân có vào phần tật nhổ tóc (tránh điền "Không" hàng loạt
+    # từ các ô trống của phiếu chung)
+    if _yn(a.get("ttm_pullsHair")) == "Có":
+        for root, rows in (("nhanThuc", TTM_AWARENESS), ("hanhViSauNho", TTM_AFTER), ("bfrb", TTM_BFRB)):
+            _ghi_bang(out, a, root, [(row, (key,), None) for key, row in rows], ba_muc=False)
+    for i, key in enumerate(MGH_KEYS, start=1):
+        v = _num(a.get(key))
+        if v is not None and 0 <= v <= 4:
+            out[f"mgh.q{i}"] = str(int(v))
     return out
 
 
@@ -902,9 +1144,27 @@ def tu_noi_dung_dan(ma_bn: str, noi_dung: str, benh: str) -> Dict[str, Any]:
     return out
 
 
+def gop_phieu_ttm(answers: Optional[dict], ttm: Optional[dict]) -> Optional[dict]:
+    """Gộp phiếu riêng tật nhổ tóc (trường `ttmAnswers`) vào phiếu chung.
+    Phiếu chung cũng có vài câu ttm_* (để trống nếu bệnh nhân không nhổ tóc) — câu nào phiếu
+    riêng CÓ trả lời thì lấy theo phiếu riêng."""
+    if not ttm:
+        return answers
+    gop = dict(answers or {})
+    for k, v in ttm.items():
+        if v is not None and v != "":
+            gop[k] = v
+        else:
+            gop.setdefault(k, v)
+    return gop
+
+
 def _tao_phan_hoi(result: dict, benh: str) -> Dict[str, Any]:
-    answers = parse_answers(result.get("answers"))
-    khong_doc_duoc = bool(result.get("answers")) and not answers
+    answers_chung = parse_answers(result.get("answers"))
+    ttm = parse_answers(result.get("ttmAnswers"))
+    answers = gop_phieu_ttm(answers_chung, ttm)
+    khong_doc_duoc = (bool(result.get("answers")) and not answers_chung) or \
+                     (bool(result.get("ttmAnswers")) and not ttm)
     ngay_sinh = _txt(result.get("patientBirthDay"))[:10]
     mapped = map_survey(answers, result, benh)
     return {
@@ -921,6 +1181,8 @@ def _tao_phan_hoi(result: dict, benh: str) -> Dict[str, Any]:
         "co_khao_sat": bool(answers),
         "khao_sat": answers,
         "dlqi_tong": dlqi_total(answers) if answers else None,
+        "co_phieu_ttm": bool(ttm),
+        "mgh_tong": mgh_total(answers) if answers else None,
         "mapped": mapped,
         "so_truong_dien": len(mapped),
     }
