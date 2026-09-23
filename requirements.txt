@@ -1,6 +1,13 @@
 fastapi
 uvicorn[standard]
-sqlmodel
+# 3 thư viện dưới đây GHIM ĐÚNG PHIÊN BẢN, đừng bỏ số phiên bản đi.
+# Lý do: 23/09/2026 Render tự cài SQLModel bản mới hơn, bản đó bắt mọi giá trị ngày giờ phải kèm
+# múi giờ, khiến toàn bộ thao tác lưu bệnh án trả lỗi 500. Code đã được sửa để chạy đúng với cả
+# bản cũ lẫn bản mới, nhưng vẫn ghim phiên bản để phòng khám không bị "tự dưng hỏng" sau một lần
+# build lại. Khi cần nâng: nâng trên máy thử nghiệm, chạy hết bộ test rồi mới đổi ở đây.
+sqlmodel==0.0.46
+pydantic==2.13.5
+sqlalchemy==2.0.54
 python-jose[cryptography]
 bcrypt
 python-multipart

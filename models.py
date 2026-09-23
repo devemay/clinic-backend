@@ -1,7 +1,20 @@
 from datetime import datetime, date
 from typing import Optional
-from sqlalchemy import Column, Text
+from sqlalchemy import Column, DateTime, Text
 from sqlmodel import SQLModel, Field
+
+
+def cot_thoi_gian() -> Column:
+    """Cột ngày giờ lưu theo giờ UTC, KHÔNG kèm múi giờ — đúng như toàn bộ dữ liệu đã có trên RDS.
+
+    Vì sao phải khai báo thẳng kiểu DateTime của SQLAlchemy: từ SQLModel 0.0.43 trở đi, khai báo
+    kiểu `datetime` trơn sẽ được hiểu là "có múi giờ", và mọi lệnh ghi dùng datetime.utcnow()
+    (không kèm múi giờ) bị chặn với lỗi "Datetime values must have timezone information" -> lưu
+    bệnh án trả lỗi 500. Khai báo cột như dưới đây chạy đúng với cả bản SQLModel cũ lẫn mới và
+    giữ nguyên cách lưu của dữ liệu cũ (không phải chuyển đổi gì trong database).
+    Mỗi trường phải có một đối tượng Column riêng nên đây là hàm, không phải hằng số.
+    """
+    return Column(DateTime, nullable=False)
 
 
 class Doctor(SQLModel, table=True):
@@ -52,7 +65,7 @@ class AACase(SQLModel, table=True):
     # Lưu ý cho lần khám sau: "" = không có. Tự xoá khi lần khám tiếp theo được tạo.
     luu_y: Optional[str] = Field(default=None, max_length=500)
     the_lam_sang: Optional[str] = Field(default=None, max_length=64)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow, sa_column=cot_thoi_gian())
 
 
 class AAFollowUp(SQLModel, table=True):
@@ -68,7 +81,7 @@ class AAFollowUp(SQLModel, table=True):
     # Lưu ý cho lần khám sau: "" = không có. Tự xoá khi lần khám tiếp theo được tạo.
     luu_y: Optional[str] = Field(default=None, max_length=500)
     dieu_tri: Optional[str] = Field(default=None, max_length=255, index=True)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column=cot_thoi_gian())
 
 
 class AGACase(SQLModel, table=True):
@@ -91,7 +104,7 @@ class AGACase(SQLModel, table=True):
     gpb_cho_tu: Optional[date] = Field(default=None, index=True)
     # Lưu ý cho lần khám sau: "" = không có. Tự xoá khi lần khám tiếp theo được tạo.
     luu_y: Optional[str] = Field(default=None, max_length=500)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow, sa_column=cot_thoi_gian())
 
 
 class AGAFollowUp(SQLModel, table=True):
@@ -107,7 +120,7 @@ class AGAFollowUp(SQLModel, table=True):
     # Lưu ý cho lần khám sau: "" = không có. Tự xoá khi lần khám tiếp theo được tạo.
     luu_y: Optional[str] = Field(default=None, max_length=500)
     dieu_tri: Optional[str] = Field(default=None, max_length=255, index=True)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column=cot_thoi_gian())
 
 
 class NonScarCase(SQLModel, table=True):
@@ -130,7 +143,7 @@ class NonScarCase(SQLModel, table=True):
     gpb_cho_tu: Optional[date] = Field(default=None, index=True)
     # Lưu ý cho lần khám sau: "" = không có. Tự xoá khi lần khám tiếp theo được tạo.
     luu_y: Optional[str] = Field(default=None, max_length=500)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow, sa_column=cot_thoi_gian())
 
 
 class NonScarFollowUp(SQLModel, table=True):
@@ -146,7 +159,7 @@ class NonScarFollowUp(SQLModel, table=True):
     # Lưu ý cho lần khám sau: "" = không có. Tự xoá khi lần khám tiếp theo được tạo.
     luu_y: Optional[str] = Field(default=None, max_length=500)
     dieu_tri: Optional[str] = Field(default=None, max_length=255, index=True)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column=cot_thoi_gian())
 
 
 class SACase(SQLModel, table=True):
@@ -170,7 +183,7 @@ class SACase(SQLModel, table=True):
     gpb_cho_tu: Optional[date] = Field(default=None, index=True)
     # Lưu ý cho lần khám sau: "" = không có. Tự xoá khi lần khám tiếp theo được tạo.
     luu_y: Optional[str] = Field(default=None, max_length=500)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow, sa_column=cot_thoi_gian())
 
 
 class SAFollowUp(SQLModel, table=True):
@@ -186,7 +199,7 @@ class SAFollowUp(SQLModel, table=True):
     # Lưu ý cho lần khám sau: "" = không có. Tự xoá khi lần khám tiếp theo được tạo.
     luu_y: Optional[str] = Field(default=None, max_length=500)
     dieu_tri: Optional[str] = Field(default=None, max_length=255, index=True)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column=cot_thoi_gian())
 
 
 class TTMCase(SQLModel, table=True):
@@ -210,7 +223,7 @@ class TTMCase(SQLModel, table=True):
     gpb_cho_tu: Optional[date] = Field(default=None, index=True)
     # Lưu ý cho lần khám sau: "" = không có. Tự xoá khi lần khám tiếp theo được tạo.
     luu_y: Optional[str] = Field(default=None, max_length=500)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow, sa_column=cot_thoi_gian())
 
 
 class TTMFollowUp(SQLModel, table=True):
@@ -226,7 +239,7 @@ class TTMFollowUp(SQLModel, table=True):
     # Lưu ý cho lần khám sau: "" = không có. Tự xoá khi lần khám tiếp theo được tạo.
     luu_y: Optional[str] = Field(default=None, max_length=500)
     dieu_tri: Optional[str] = Field(default=None, max_length=255, index=True)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column=cot_thoi_gian())
 
 
 class CaiDat(SQLModel, table=True):
@@ -234,4 +247,4 @@ class CaiDat(SQLModel, table=True):
     Bảng MỚI nên create_all() tự tạo khi khởi động, không đụng tới bảng có dữ liệu cũ."""
     khoa: str = Field(primary_key=True, max_length=64)
     gia_tri: str = Field(default="", sa_column=Column(Text))
-    cap_nhat_luc: datetime = Field(default_factory=datetime.utcnow)
+    cap_nhat_luc: datetime = Field(default_factory=datetime.utcnow, sa_column=cot_thoi_gian())
