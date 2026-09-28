@@ -27,6 +27,9 @@ class Doctor(SQLModel, table=True):
     can_export: bool = Field(default=False)  # được xuất dữ liệu tổng hợp nghiên cứu
     can_delete: bool = Field(default=False)  # được xoá bệnh án / lần tái khám / bệnh nhân
     is_admin: bool = Field(default=False)  # được cấp/sửa/xoá tài khoản người khác
+    # Được chọn thêm bác sĩ khám kèm ở ô "Bác sĩ khám" (VD tài khoản bác sĩ nội trú khám cùng thầy).
+    # Tài khoản không bật cờ này thì ô "Bác sĩ khám" tự điền đúng tên của chính tài khoản đó.
+    can_chon_bs: bool = Field(default=False)
     # Mọi tài khoản đăng nhập được đều mặc định điền/sửa được dữ liệu trong hồ sơ đã có — không cần cờ riêng
 
 

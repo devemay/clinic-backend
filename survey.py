@@ -524,6 +524,86 @@ _TREATED_KEYS = [
 ]
 
 
+# Những câu bệnh nhân đã trả lời nhưng KHÔNG có ô riêng trong bệnh án nào.
+# Trước đây các câu này chỉ nằm ở tab "Phiếu khảo sát" nên bác sĩ dễ bỏ sót —
+# nay đưa hết vào đoạn tóm tắt bệnh sử.
+_KIEU_KHOI_PHAT = {"sudden": "đột ngột", "gradual": "từ từ", "unknown": "không rõ"}
+_TRIEU_CHUNG_THEM = [
+    ("scalp_scaling", "bong vảy da đầu"),
+    ("scalp_redness", "đỏ da đầu"),
+    ("scalp_sensitive", "da đầu nhạy cảm"),
+    ("scalp_papuleUlcer", "sẩn/loét da đầu"),
+]
+
+
+def _cau_con_lai(a: dict) -> List[str]:
+    """Các câu còn lại của phiếu -> đưa vào đoạn tóm tắt bệnh sử (không bỏ sót câu nào)."""
+    ds: List[str] = []
+    kieu = _KIEU_KHOI_PHAT.get(_txt(a.get("onsetSymptom")).lower()) or _txt(a.get("onsetSymptom"))
+    dac_diem = _txt(a.get("hairLossCharacteristic"))
+    so_soi = _txt(a.get("hairLossAmount24h"))
+    mo_ta = [x for x in (f"khởi phát {kieu}" if kieu else "", dac_diem,
+                         f"khoảng {so_soi} sợi/24 giờ" if so_soi else "") if x]
+    if mo_ta:
+        ds.append("Kiểu rụng tóc bệnh nhân tự mô tả: " + ", ".join(mo_ta))
+
+    them = [nhan for key, nhan in _TRIEU_CHUNG_THEM if _is_yes(a, key)]
+    if _is_yes(a, "erythema_face_scalp"):
+        them.append("đỏ da mặt/da đầu" + (f" ({_txt(a.get('erythema_desc'))})" if _txt(a.get("erythema_desc")) else ""))
+    if them:
+        ds.append("Triệu chứng da đầu khác: " + ", ".join(them))
+
+    dau_xa = _txt(a.get("conditioner"))
+    cham_soc = _txt(a.get("hairCareOther"))
+    if dau_xa or cham_soc:
+        ds.append("Chăm sóc tóc thêm: " + ", ".join(x for x in (
+            f"dầu xả {dau_xa}" if dau_xa else "", cham_soc) if x))
+
+    # Nội tiết nữ — bệnh án chỉ có ô "Kinh nguyệt bất thường", phần chi tiết ghi vào đây
+    nt = []
+    chu_ky = _txt(a.get("period_days_between"))
+    so_ngay = _txt(a.get("period_duration_days"))
+    luong = _txt(a.get("period_bleeding_amount"))
+    if chu_ky or so_ngay or luong:
+        nt.append("kinh nguyệt " + ", ".join(x for x in (
+            f"chu kỳ {chu_ky} ngày" if chu_ky else "", f"hành kinh {so_ngay} ngày" if so_ngay else "",
+            f"lượng {luong}" if luong else "") if x))
+    con_kinh = _yn(a.get("period_has"))
+    if con_kinh:
+        nt.append("còn kinh nguyệt" if con_kinh == "Có" else f"không còn kinh nguyệt ({con_kinh.lower()})")
+    if _is_yes(a, "menopause"):
+        tuoi = _txt(a.get("menopause_age"))
+        nt.append("đã mãn kinh" + (f" năm {tuoi} tuổi" if tuoi else ""))
+    for key, lst, nhan in (("contraceptionHistory", "contraceptionHistory_list", "từng dùng thuốc tránh thai"),
+                           ("ocpChangeRecent", "ocpChangeRecent_list", "gần đây có đổi/ngừng thuốc tránh thai"),
+                           ("otherHormoneTherapyHistory", "otherHormoneTherapyHistory_list",
+                            "từng dùng liệu pháp nội tiết khác")):
+        if _is_yes(a, key):
+            ct = _txt(a.get(lst))
+            nt.append(nhan + (f" ({ct})" if ct else ""))
+    if nt:
+        ds.append("Nội tiết – kinh nguyệt: " + "; ".join(nt))
+
+    an_kieng = _txt(a.get("weightLossDiet_list"))
+    if an_kieng:
+        ds.append(f"Chế độ ăn giảm cân đang áp dụng: {an_kieng}")
+
+    gd = []
+    if _is_yes(a, "fam_male_baldComplete"):
+        gd.append("người thân nam hói hoàn toàn")
+    if _is_yes(a, "fam_male_similarPattern"):
+        gd.append("người thân nam rụng tóc giống kiểu của bệnh nhân")
+    if _is_yes(a, "fam_female_similarPattern"):
+        gd.append("người thân nữ rụng tóc giống kiểu của bệnh nhân")
+    if gd:
+        ds.append("Tiền sử gia đình (chi tiết): " + ", ".join(gd))
+
+    anh_cu = _txt(a.get("youngHairPhotoNote"))
+    if anh_cu:
+        ds.append(f"Ghi chú ảnh tóc thời trẻ: {anh_cu}")
+    return ds
+
+
 def build_history_text(a: dict) -> str:
     """Gộp toàn bộ mục 6 (Lịch sử điều trị) của phiếu thành đoạn văn tiếng Việt,
     để bác sĩ đọc nhanh thay vì mở từng ô."""
@@ -627,6 +707,8 @@ def build_history_text(a: dict) -> str:
     if locs:
         lines.append("Vị trí rụng tóc bệnh nhân tự khai: " + ", ".join(locs) + " (bác sĩ tự khám và đánh giá lại)")
 
+    lines += _cau_con_lai(a)
+
     cause = _txt(a.get("cause"))
     if cause:
         lines.append(f"Bệnh nhân nghĩ nguyên nhân rụng tóc là: {cause}")
@@ -728,6 +810,63 @@ def _ghi_bang(out: dict, a: dict, root: str, rows, ba_muc: bool = True) -> None:
                 out[f"{root}.{row}.detail"] = detail
 
 
+# Các bệnh bệnh nhân khai trong phiếu mà bệnh án AA KHÔNG có dòng riêng.
+# Thay vì bỏ đi, gom hết vào ô chi tiết của dòng "Bệnh lý khác" để bác sĩ nhìn thấy ngay.
+BENH_KHAC_AA = [
+    ("mh_dandruff", "gàu"),
+    ("mh_cysticAcne", "trứng cá mụn nang"),
+    ("mh_anemia", "thiếu máu"),
+    ("mh_severeHeadache", "đau đầu nghiêm trọng"),
+    ("mh_depression", "trầm cảm"),
+    ("mh_anxiety", "lo âu"),
+    ("mh_ocd", "rối loạn ám ảnh cưỡng chế (OCD)"),
+    ("mh_adhd", "tăng động giảm chú ý (ADHD)"),
+    ("mh_lichenPlanus", "lichen phẳng (da/miệng/móng)"),
+    ("mh_recurrentFolliculitis", "viêm nang lông tái phát / nhọt da đầu"),
+    ("mh_seborrheicRosacea", "viêm da tiết bã nặng / rosacea"),
+    ("mh_hidradenitis", "viêm tuyến mồ hôi mủ (hidradenitis suppurativa)"),
+    ("mh_headBurnTraumaRadiation", "bỏng / chấn thương / tia xạ vùng đầu"),
+    ("mh_pregnantOrBreastfeeding", "đang mang thai hoặc cho con bú"),
+    ("mh_pcos", "buồng trứng đa nang"),
+    ("mh_facialHair", "lông mặt mọc nhiều"),
+    ("mh_bodyHair", "lông cơ thể mọc nhiều"),
+    ("mh_nippleDischarge", "chảy dịch tiết từ vú"),
+    ("mh_deeperVoice", "giọng nói trầm hơn"),
+    ("mh_clitoromegaly", "phì đại âm vật"),
+]
+# Bệnh mạn tính khai ở mục "6 tháng trước khi rụng tóc" — ghi kèm chú thích nguồn.
+BENH_KHAC_AA_PRE = [
+    ("pre_thyroidDisease", "bệnh tuyến giáp"),
+    ("pre_diabetesOrInsulinResistance", "đái tháo đường / kháng insulin"),
+    ("pre_endStageChronicKidneyDisease", "bệnh thận mạn giai đoạn cuối"),
+    ("pre_chronicLiverDisease", "bệnh gan mạn tính"),
+    ("pre_syphilis", "giang mai"),
+    ("pre_polycysticOvarySyndrome", "buồng trứng đa nang"),
+]
+GIA_DINH_KHAC_AA = [
+    ("fam_thyroid_anemia_pcos_lupus", "bệnh tuyến giáp / thiếu máu / buồng trứng đa nang / lupus"),
+    ("fam_scarring_alopecia", "rụng tóc sẹo"),
+    ("fam_folliculitis_acne", "bệnh lý nang lông / trứng cá nặng"),
+    ("fam_trichotillomania", "tật nhổ tóc / nhổ lông (BFRBs)"),
+    ("fam_psychiatric", "rối loạn tâm thần kinh"),
+    ("fam_breast_ovarian_cancer", "ung thư vú / buồng trứng"),
+]
+
+
+def _benh_ly_khac(out: dict, a: dict, root: str, muc: list, hau_to: str = "") -> None:
+    """Gom mọi câu trả lời "Có" chưa có dòng riêng vào dòng "Bệnh lý khác".
+    Không ghi gì khi bệnh nhân không khai bệnh nào — phiếu không hỏi "còn bệnh nào khác
+    không", nên không được tự kết luận "Không"."""
+    ten = [nhan for key, nhan in muc if _is_yes(a, key)]
+    if not ten:
+        return
+    ten = list(dict.fromkeys(ten))          # bỏ trùng, giữ thứ tự
+    cu = _txt(out.get(f"{root}.Bệnh lý khác.detail"))
+    moi = "; ".join(ten) + hau_to
+    out[f"{root}.Bệnh lý khác.status"] = "Có"
+    out[f"{root}.Bệnh lý khác.detail"] = f"{cu}; {moi}" if cu else moi
+
+
 def _tuoi_khoi_phat(out: dict, a: dict) -> None:
     age = _num(a.get("hairLossOnsetAge"))
     if age is not None:
@@ -825,14 +964,25 @@ def map_aa(a: dict, result: dict) -> Dict[str, Any]:
         ("Dị ứng thuốc", ("drugAllergy",), "drugAllergy_list"),
         ("Vảy nến", ("mh_psoriasis",), None),
         ("Bệnh Celiac", ("mh_celiac",), None),
-        ("Bệnh tự miễn khác", ("mh_lupus",), None),
+        ("Bệnh tự miễn khác", ("mh_lupus", "pre_systemicLupusErythematosus"), None),
     ))
+    if _yn_or_none(a, "mh_lupus", "pre_systemicLupusErythematosus") == "Có":
+        out["tienSuBanThan.Bệnh tự miễn khác.detail"] = "Lupus ban đỏ hệ thống"
+    _benh_ly_khac(out, a, "tienSuBanThan", BENH_KHAC_AA)
+    _benh_ly_khac(out, a, "tienSuBanThan", BENH_KHAC_AA_PRE, " (khai ở mục 6 tháng trước khi rụng tóc)")
     _ghi_bang(out, a, "tienSuGiaDinh", (
         ("Rụng tóc từng mảng", ("fam_alopecia_areata",), None),
         ("Bệnh lý cơ địa", ("fam_atopy",), None),
         ("Bệnh lý tự miễn", ("fam_autoimmune",), None),
+        # fam_celiac CHƯA có trong phiếu khảo sát của bệnh viện (xem tài liệu gửi phòng CNTT).
+        # Để sẵn ở đây: ngày phòng CNTT thêm câu hỏi là tự đồng bộ được, không phải sửa phần mềm.
+        ("Bệnh Celiac", ("fam_celiac",), None),
         ("Bạch biến", ("fam_vitiligo",), None),
     ))
+    _benh_ly_khac(out, a, "tienSuGiaDinh", GIA_DINH_KHAC_AA)
+    ho_hang = _txt(a.get("fam_breast_ovarian_relation"))
+    if ho_hang and _is_yes(a, "fam_breast_ovarian_cancer"):
+        out["tienSuGiaDinh.Bệnh lý khác.detail"] += f" ({ho_hang})"
     return out
 
 
@@ -1074,13 +1224,67 @@ SURVEY_MAPPERS = {
 }
 
 
+# Tài liệu "Yêu cầu API dữ liệu bệnh viện" gửi phòng CNTT có một số mã trường viết theo kiểu
+# gạch dưới, trong khi phiếu thật của bệnh viện đang dùng kiểu viết hoa giữa chừng
+# (VD tài liệu ghi mh_atopic_derm, phiếu thật là mh_atopicDermatitis). Nếu sau này phòng CNTT
+# dựng câu hỏi mới theo đúng tài liệu thì tên sẽ khác tên phần mềm đang đọc -> mất đồng bộ.
+# Bảng dưới nhận CẢ HAI cách viết: thấy tên kiểu tài liệu mà chưa có tên thật thì chép sang.
+TEN_THAY_THE = {
+    "mh_allergic_rhinitis": "mh_allergicRhinitis",
+    "mh_atopic_derm": "mh_atopicDermatitis",
+    "mh_graves": "mh_basedow",
+    "mh_lichen_planus": "mh_lichenPlanus",
+    "mh_folliculitis": "mh_recurrentFolliculitis",
+    "mh_seborrheic": "mh_seborrheicRosacea",
+    "mh_scalp_trauma": "mh_headBurnTraumaRadiation",
+    "mh_pregnancy_now": "mh_pregnantOrBreastfeeding",
+    "onsetAge": "hairLossOnsetAge",
+    "hair_relaxer": "habit_chemicalRelaxer",
+    "hair_weave_wig": "habit_wigExtensions",
+    "hair_dye_bleach": "habit_dyeBleach",
+    "hair_scalp_oil": "habit_scalpOil",
+    "hair_no_special_care": "habit_noSpecialCare",
+    "ttm_has_pulling": "ttm_pullsHair",
+    "ttm_aware": "ttm_selfAware",
+    "ttm_family_observed": "ttm_familyWitnessed",
+    "ttm_tension_before": "ttm_tensionBefore",
+    "ttm_relief_after": "ttm_reliefAfter",
+    "ttm_guilt_after": "ttm_guiltAfter",
+    "ttm_check_root": "ttm_inspectRoot",
+    "ttm_bite_hair": "ttm_biteHair",
+    "ttm_eat_hair": "ttm_eatHair",
+    "ttm_visible_loss": "ttm_visibleLoss",
+    "ttm_stop_attempts": "ttm_failedToStop",
+    "ttm_distress": "ttm_distressImpairment",
+    "ttm_onset_context": "ttm_onsetContext",
+    "mgh_q1": "mgh_urgeFrequency", "mgh_q2": "mgh_urgeIntensity", "mgh_q3": "mgh_timeSpent",
+    "mgh_q4": "mgh_control", "mgh_q5": "mgh_distress", "mgh_q6": "mgh_workImpact",
+    "mgh_q7": "mgh_socialImpact",
+    "bfrb_nail_biting": "bfrb_nailBiting",
+    "bfrb_eyebrow_pulling": "bfrb_eyebrowPulling",
+    "bfrb_eyelash_pulling": "bfrb_eyelashPulling",
+    "bfrb_body_hair_pulling": "bfrb_bodyHairPulling",
+    "bfrb_skin_picking": "bfrb_skinPicking",
+    "bfrb_lip_biting": "bfrb_lipCheekBiting",
+}
+
+
+def _nhan_ca_hai_cach_viet(a: dict) -> dict:
+    """Chép tên kiểu tài liệu sang tên phần mềm đang đọc (chỉ khi tên thật chưa có giá trị)."""
+    them = {}
+    for cu, moi in TEN_THAY_THE.items():
+        if cu in a and _txt(a.get(moi)) == "" and a.get(moi) is not True:
+            them[moi] = a[cu]
+    return {**a, **them} if them else a
+
+
 def map_survey(answers: Optional[dict], result: dict, benh: str) -> Dict[str, Any]:
     if not isinstance(answers, dict) or not answers:
         return {}
     mapper = SURVEY_MAPPERS.get((benh or "").lower())
     if not mapper:
         return {}
-    return mapper(answers, result)
+    return mapper(_nhan_ca_hai_cach_viet(answers), result)
 
 
 # ---------- 5. Thông tin hành chính lấy từ phiếu ----------
@@ -1186,14 +1390,16 @@ def gop_phieu_ttm(answers: Optional[dict], ttm: Optional[dict]) -> Optional[dict
     Phiếu chung cũng có vài câu ttm_* (để trống nếu bệnh nhân không nhổ tóc) — câu nào phiếu
     riêng CÓ trả lời thì lấy theo phiếu riêng."""
     if not ttm:
-        return answers
+        return _nhan_ca_hai_cach_viet(answers) if answers else answers
     gop = dict(answers or {})
     for k, v in ttm.items():
         if v is not None and v != "":
             gop[k] = v
         else:
             gop.setdefault(k, v)
-    return gop
+    # Đổi tên kiểu tài liệu sang tên phần mềm đang đọc NGAY TẠI ĐÂY, để mọi chỗ dùng phiếu
+    # (tổng DLQI, tổng MGH-HPS, tab "Phiếu khảo sát"...) đều hiểu, không chỉ riêng bảng ánh xạ.
+    return _nhan_ca_hai_cach_viet(gop)
 
 
 def _tao_phan_hoi(result: dict, benh: str) -> Dict[str, Any]:

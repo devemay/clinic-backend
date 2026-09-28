@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import io
 import json
 import os
@@ -172,6 +173,7 @@ class Token(BaseModel):
     can_export: bool
     can_delete: bool
     is_admin: bool
+    can_chon_bs: bool = False
 
 
 class PatientIn(BaseModel):
@@ -200,7 +202,17 @@ class DataIn(BaseModel):
 SALT_VUNG = [("dinh", 40), ("cham", 24), ("tdPhai", 18), ("tdTrai", 18)]
 
 
-def calc_salt(vung: Dict[str, Any]) -> float:
+def calc_salt(vung: Dict[str, Any], salt_o: Any = None) -> float:
+    """Điểm SALT.
+
+    Từ bản 25, bác sĩ chấm trực tiếp trên bản đồ SALT II: da đầu chia 100 ô, mỗi ô 1% —
+    điểm chính là SỐ Ô được tick (trường `saltO`). Hồ sơ nhập trước đó không có `saltO`
+    nên vẫn tính theo cách cũ (4 vùng × tỷ lệ ước lượng) để điểm cũ không đổi.
+    Logic này phải khớp tuyệt đối với calcSalt() bên frontend."""
+    if isinstance(salt_o, dict):
+        n = sum(1 for v in salt_o.values() if v is True)
+        if n or salt_o:
+            return float(min(100, n))
     total = 0.0
     for key, weight in SALT_VUNG:
         b = float((vung or {}).get(key, {}).get("b", 0) or 0)
@@ -446,7 +458,7 @@ NEW_CASE_SECTIONS = {
     "Hành chính": ["ngayKham", "bacSiKham", "ngheNghiep", "trinhDo", "chieuCao", "canNang"],
     "Bệnh sử - Tiền sử": ["tuoiKhoiPhat", "thoiGianMacBenh", "soDotTaiPhat", "benhSuTruoc", "yeuToKhoiPhat", "dieuTriTruocDoStatus", "thuocDangDung", "tienSuBanThan", "tienSuGiaDinh"],
     "Khám thực thể": ["sotStatus", "mach", "ha", "viTriRungToc", "pullTest", "tocToMoc", "viTriTonThuong", "tonThuongMong", "trieuChungCoNang", "theLamSang"],
-    "Mức độ nặng (SALT)": ["soLuongMang", "dienTichThucTe", "vung", "mangDai", "mangRong", "mangViTri", "yeuToNangBac"],
+    "Mức độ nặng (SALT)": ["soLuongMang", "dienTichThucTe", "saltTong", "mangDai", "mangRong", "mangViTri", "yeuToNangBac"],
     "Dermoscopy": ["dermoscopy"],
     "Cận lâm sàng": ["labs", "treponema", "viNam", "sieuAmTuyenGiap", "il15", "il13", "ifnG", "ifnGMo", "il13Mo", "ngayLayMau"],
     "Giải phẫu bệnh": ["gpbCo"],
@@ -457,7 +469,7 @@ NEW_CASE_SECTIONS = {
 }
 FOLLOWUP_SECTIONS = {
     "Lâm sàng": ["ngayKham", "bacSiKham", "lamSang", "pullTest", "tocToMoc", "mucDoSoVoiTruoc", "tacDungPhuStatus"],
-    "Mức độ nặng (SALT)": ["soLuongMang", "vung", "mucDoDapUng", "mangDai", "mangRong", "mangViTri", "yeuToNangBac"],
+    "Mức độ nặng (SALT)": ["soLuongMang", "saltTong", "mucDoDapUng", "mangDai", "mangRong", "mangViTri", "yeuToNangBac"],
     "Dermoscopy": ["dermoscopy", "vas", "tdkm"],
     "Cận lâm sàng & điều trị": ["xnStatus", "xnKetQua", "dieuTri"],
     "Giải phẫu bệnh": ["gpbCo"],
@@ -632,12 +644,12 @@ def login(form: OAuth2PasswordRequestForm = Depends(), session: Session = Depend
     if not doctor:
         raise HTTPException(status_code=401, detail="Sai tên đăng nhập hoặc mật khẩu")
     token = create_access_token(doctor.username)
-    return Token(access_token=token, display_name=doctor.display_name, role=doctor.role, can_create=doctor.can_create, can_export=doctor.can_export, can_delete=doctor.can_delete, is_admin=doctor.is_admin)
+    return Token(access_token=token, display_name=doctor.display_name, role=doctor.role, can_create=doctor.can_create, can_export=doctor.can_export, can_delete=doctor.can_delete, is_admin=doctor.is_admin, can_chon_bs=bool(doctor.can_chon_bs))
 
 
 @app.get("/auth/me")
 def me(doctor: Doctor = Depends(get_current_doctor)):
-    return {"username": doctor.username, "display_name": doctor.display_name, "role": doctor.role, "can_create": doctor.can_create, "can_export": doctor.can_export, "can_delete": doctor.can_delete, "is_admin": doctor.is_admin}
+    return doctor_public(doctor)
 
 
 class ChangePasswordIn(BaseModel):
@@ -671,6 +683,7 @@ class DoctorCreateIn(BaseModel):
     can_export: bool = False
     can_delete: bool = False
     is_admin: bool = False
+    can_chon_bs: bool = False
 
 
 class DoctorPermissionsIn(BaseModel):
@@ -680,6 +693,7 @@ class DoctorPermissionsIn(BaseModel):
     can_export: Optional[bool] = None
     can_delete: Optional[bool] = None
     is_admin: Optional[bool] = None
+    can_chon_bs: Optional[bool] = None
 
 
 class ResetPasswordIn(BaseModel):
@@ -690,6 +704,7 @@ def doctor_public(d: Doctor) -> dict:
     return {
         "username": d.username, "display_name": d.display_name, "role": d.role,
         "can_create": d.can_create, "can_export": d.can_export, "can_delete": d.can_delete, "is_admin": d.is_admin,
+        "can_chon_bs": bool(d.can_chon_bs),
     }
 
 
@@ -709,6 +724,7 @@ def create_doctor(payload: DoctorCreateIn, session: Session = Depends(get_sessio
         username=payload.username, display_name=payload.display_name,
         hashed_password=hash_password(payload.password), role=payload.role,
         can_create=payload.can_create, can_export=payload.can_export, can_delete=payload.can_delete, is_admin=payload.is_admin,
+        can_chon_bs=payload.can_chon_bs,
     )
     session.add(d)
     session.commit()
@@ -722,7 +738,7 @@ def update_doctor_permissions(username: str, payload: DoctorPermissionsIn, sessi
         raise HTTPException(status_code=404, detail="Không tìm thấy tài khoản")
     if username == admin.username and payload.is_admin is False:
         raise HTTPException(status_code=400, detail="Không thể tự bỏ quyền admin của chính mình")
-    for field in ["display_name", "role", "can_create", "can_export", "can_delete", "is_admin"]:
+    for field in ["display_name", "role", "can_create", "can_export", "can_delete", "is_admin", "can_chon_bs"]:
         value = getattr(payload, field)
         if value is not None:
             setattr(d, field, value)
@@ -753,6 +769,73 @@ def delete_doctor(username: str, session: Session = Depends(get_session), admin:
         raise HTTPException(status_code=404, detail="Không tìm thấy tài khoản")
     session.delete(d)
     session.commit()
+    return {"ok": True}
+
+
+# ---------- mô tả, ảnh minh hoạ và đánh dấu "trường quan trọng" ----------
+# Trước bản 25 phần này lưu trong trình duyệt nên mỗi máy một kiểu. Nay lưu ở bảng cai_dat:
+# mỗi trường một dòng (khoá = "truong:" + mã băm của nhãn) để không dòng nào chạm giới hạn
+# 64 KB của cột TEXT trên MySQL, và để sửa 1 trường không phải ghi lại toàn bộ.
+_TIEN_TO_TRUONG = "truong:"
+_GIOI_HAN_TRUONG = 60000   # ký tự, chừa biên an toàn dưới mức 64 KB của cột TEXT
+
+
+def _khoa_truong(nhan: str) -> str:
+    return _TIEN_TO_TRUONG + hashlib.md5(nhan.encode("utf-8")).hexdigest()
+
+
+class TruongMetaIn(BaseModel):
+    nhan: str
+    mo_ta: str = ""
+    anh: str = ""
+    quan_trong: bool = False
+
+
+@app.get("/cai-dat/truong")
+def doc_meta_truong(session: Session = Depends(get_session), doctor: Doctor = Depends(get_current_doctor)):
+    """Toàn bộ mô tả/ảnh/đánh dấu quan trọng của các trường. Mọi tài khoản đăng nhập đều đọc được."""
+    ds = session.exec(select(CaiDat).where(CaiDat.khoa.like(_TIEN_TO_TRUONG + "%"))).all()
+    out = {}
+    for cd in ds:
+        try:
+            m = json.loads(cd.gia_tri or "{}")
+        except ValueError:
+            continue
+        nhan = m.get("nhan")
+        if nhan:
+            out[nhan] = {"desc": m.get("mo_ta", ""), "img": m.get("anh", ""),
+                         "quanTrong": bool(m.get("quan_trong"))}
+    return out
+
+
+@app.put("/cai-dat/truong")
+def luu_meta_truong(payload: TruongMetaIn, session: Session = Depends(get_session),
+                    doctor: Doctor = Depends(require_export_permission)):
+    nhan = (payload.nhan or "").strip()
+    if not nhan:
+        raise HTTPException(status_code=400, detail="Thiếu tên trường")
+    goi = {"nhan": nhan, "mo_ta": payload.mo_ta, "anh": payload.anh, "quan_trong": payload.quan_trong}
+    chuoi = json.dumps(goi, ensure_ascii=False)
+    if len(chuoi) > _GIOI_HAN_TRUONG:
+        raise HTTPException(status_code=400,
+                            detail="Ảnh minh hoạ quá lớn, chọn ảnh nhỏ hơn hoặc bỏ ảnh đi")
+    if not payload.mo_ta and not payload.anh and not payload.quan_trong:
+        cd = session.get(CaiDat, _khoa_truong(nhan))
+        if cd:
+            session.delete(cd)
+            session.commit()
+        return {"ok": True, "da_xoa": True}
+    _ghi_cai_dat(session, _khoa_truong(nhan), chuoi)
+    return {"ok": True}
+
+
+@app.delete("/cai-dat/truong")
+def xoa_meta_truong(nhan: str, session: Session = Depends(get_session),
+                    doctor: Doctor = Depends(require_export_permission)):
+    cd = session.get(CaiDat, _khoa_truong(nhan))
+    if cd:
+        session.delete(cd)
+        session.commit()
     return {"ok": True}
 
 
@@ -1022,7 +1105,7 @@ def save_case_data(
     cap_nhat_cot_gpb(case, payload.data)
     cap_nhat_cot_luu_y(case, payload.data)
     cap_nhat_cot_dong_mac(case, payload.data)
-    salt = calc_salt(payload.data.get("vung", {}))
+    salt = calc_salt(payload.data.get("vung", {}), payload.data.get("saltO"))
     case.muc_do_nang = mucdo_sau_dieu_chinh(salt, payload.data.get("yeuToNangBac"))
     case.the_lam_sang = payload.data.get("theLamSang")
     case.updated_at = datetime.utcnow()
@@ -1081,7 +1164,7 @@ def save_followup_data(
     cap_nhat_cot_luu_y(fu, payload.data)
     dong_bo_dong_mac_tu_tai_kham(session, fu, AACase, payload.data)
     case = session.get(AACase, fu.case_id)
-    salt_now = calc_salt(payload.data.get("vung", {}))
+    salt_now = calc_salt(payload.data.get("vung", {}), payload.data.get("saltO"))
     fu.muc_do_nang = mucdo_sau_dieu_chinh(salt_now, payload.data.get("yeuToNangBac"))
     fu.dieu_tri = (payload.data.get("dieuTri") or "")[:255]
     session.add(fu)
@@ -1861,7 +1944,8 @@ def recent_cases(limit: int = 8, session: Session = Depends(get_session), doctor
     for c in cases:
         p = bn.get(c.ma_bn)
         fu_count = len(tk_theo_case.get(c.id, []))
-        salt = calc_salt(json.loads(c.benh_an_moi).get("vung", {}))
+        _ba = json.loads(c.benh_an_moi)
+        salt = calc_salt(_ba.get("vung", {}), _ba.get("saltO"))
         out.append({"ma_luu_tru": c.ma_luu_tru, "ma_bn": c.ma_bn, "ho_ten": p.ho_ten if p else None, "salt": salt, "so_lan_tk": fu_count})
     return out
 
@@ -1932,7 +2016,7 @@ def export_aa_csv(
     for c in ds_case:
         p = bn.get(c.ma_bn)
         d = json.loads(c.benh_an_moi)
-        salt = calc_salt(d.get("vung", {}))
+        salt = calc_salt(d.get("vung", {}), d.get("saltO"))
         writer.writerow([c.ma_luu_tru, c.ma_bn, p.ho_ten if p else "", p.gioi_tinh if p else "", p.nam_sinh if p else "",
                           "T0", c.ngay_tao, salt, c.muc_do_nang, d.get("dieuTri", "")])
 
@@ -1947,7 +2031,7 @@ def export_aa_csv(
             if den_ngay and f.ngay_kham and str(f.ngay_kham) > den_ngay:
                 continue
             fd = json.loads(f.data)
-            salt_f = calc_salt(fd.get("vung", {}))
+            salt_f = calc_salt(fd.get("vung", {}), fd.get("saltO"))
             writer.writerow([c.ma_luu_tru, c.ma_bn, p.ho_ten if p else "", p.gioi_tinh if p else "", p.nam_sinh if p else "",
                               f"Tái khám {i+1}", f.ngay_kham, salt_f, f.muc_do_nang, f.dieu_tri or ""])
 
