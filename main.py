@@ -15,7 +15,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from auth import authenticate_doctor, create_access_token, get_current_doctor, require_export_permission, require_delete_permission, require_create_permission, require_admin, hash_password, verify_password
+from auth import authenticate_doctor, create_access_token, get_current_doctor, require_export_permission, require_delete_permission, require_create_permission, require_admin, require_gpb_permission, require_sua_benh_an, hash_password, verify_password
 from database import get_session, init_db
 from models import (AACase, AAFollowUp, AGACase, AGAFollowUp, NonScarCase, NonScarFollowUp,
                     SACase, SAFollowUp, TTMCase, TTMFollowUp, Doctor, Patient, CaiDat)
@@ -174,6 +174,7 @@ class Token(BaseModel):
     can_delete: bool
     is_admin: bool
     can_chon_bs: bool = False
+    can_gpb: bool = False
 
 
 class PatientIn(BaseModel):
@@ -293,7 +294,10 @@ def get_path(data, path: str):
 # dùng được cho nghiên cứu). Mọi mục khác chỉ cần >= 1 trường có giá trị.
 # Chỉ liệt kê những trường LUÔN HIỂN THỊ trên form — ô phụ thuộc (chỉ hiện khi chọn "Có")
 # cố ý không đưa vào, để hồ sơ không bao giờ rơi vào thế không thể hoàn thành.
-STRICT_PREFIXES = ("Khám thực thể", "Thang điểm", "Mức độ nặng")
+# "Bệnh sử - Tiền sử" và "Lâm sàng" thêm ngày 08/10/2026 theo yêu cầu bác sĩ.
+# PHẢI khớp đúng hằng số cùng tên trong app.jsx, nếu lệch thì dấu tích xanh trên màn hình
+# và cột da_dien_du_lieu trong database sẽ nói hai điều khác nhau.
+STRICT_PREFIXES = ("Khám thực thể", "Thang điểm", "Mức độ nặng", "Bệnh sử - Tiền sử", "Lâm sàng")
 
 
 def is_strict_section(name: str) -> bool:
@@ -327,7 +331,13 @@ def cap_nhat_cot_gpb(ban_ghi, data: dict) -> None:
     sắp xếp bằng SQL thay vì phải mở JSON của toàn bộ bản ghi."""
     st = compute_gpb_status(data)
     if st is None:
-        ban_ghi.gpb_trang_thai, ban_ghi.gpb_cho_tu = "", None
+        # Đã chỉ định sinh thiết nhưng chưa có ngày thực hiện lẫn kết quả: trước đây coi như
+        # không có GPB nên màn hình của bác sĩ giải phẫu bệnh không thấy ca này. Đánh dấu
+        # "chi_dinh" để vẫn liệt kê được, mà không đụng tới logic badge "Chờ GPB / Có GPB".
+        if data and data.get("gpbCo") == "Có":
+            ban_ghi.gpb_trang_thai, ban_ghi.gpb_cho_tu = "chi_dinh", None
+        else:
+            ban_ghi.gpb_trang_thai, ban_ghi.gpb_cho_tu = "", None
     elif st["type"] == "done":
         ban_ghi.gpb_trang_thai, ban_ghi.gpb_cho_tu = "co", None
     else:
@@ -455,7 +465,7 @@ def nap_tai_kham(session: Session, FUModel, case_ids) -> Dict[int, list]:
 
 
 NEW_CASE_SECTIONS = {
-    "Hành chính": ["ngayKham", "bacSiKham", "ngheNghiep", "trinhDo", "chieuCao", "canNang"],
+    "Hành chính": ["ngayKham", "bacSiKham", "ngheNghiep", "trinhDo", "chieuCao", "canNang", "luuHuyetThanh"],
     "Bệnh sử - Tiền sử": ["tuoiKhoiPhat", "thoiGianMacBenh", "soDotTaiPhat", "benhSuTruoc", "yeuToKhoiPhat", "dieuTriTruocDoStatus", "thuocDangDung", "tienSuBanThan", "tienSuGiaDinh"],
     "Khám thực thể": ["sotStatus", "mach", "ha", "viTriRungToc", "pullTest", "tocToMoc", "viTriTonThuong", "tonThuongMong", "trieuChungCoNang", "theLamSang"],
     "Mức độ nặng (SALT)": ["soLuongMang", "dienTichThucTe", "saltTong", "mangDai", "mangRong", "mangViTri", "yeuToNangBac"],
@@ -644,7 +654,7 @@ def login(form: OAuth2PasswordRequestForm = Depends(), session: Session = Depend
     if not doctor:
         raise HTTPException(status_code=401, detail="Sai tên đăng nhập hoặc mật khẩu")
     token = create_access_token(doctor.username)
-    return Token(access_token=token, display_name=doctor.display_name, role=doctor.role, can_create=doctor.can_create, can_export=doctor.can_export, can_delete=doctor.can_delete, is_admin=doctor.is_admin, can_chon_bs=bool(doctor.can_chon_bs))
+    return Token(access_token=token, display_name=doctor.display_name, role=doctor.role, can_create=doctor.can_create, can_export=doctor.can_export, can_delete=doctor.can_delete, is_admin=doctor.is_admin, can_chon_bs=bool(doctor.can_chon_bs), can_gpb=bool(getattr(doctor, 'can_gpb', False)))
 
 
 @app.get("/auth/me")
@@ -684,6 +694,7 @@ class DoctorCreateIn(BaseModel):
     can_delete: bool = False
     is_admin: bool = False
     can_chon_bs: bool = False
+    can_gpb: bool = False
 
 
 class DoctorPermissionsIn(BaseModel):
@@ -694,6 +705,7 @@ class DoctorPermissionsIn(BaseModel):
     can_delete: Optional[bool] = None
     is_admin: Optional[bool] = None
     can_chon_bs: Optional[bool] = None
+    can_gpb: Optional[bool] = None
 
 
 class ResetPasswordIn(BaseModel):
@@ -705,6 +717,7 @@ def doctor_public(d: Doctor) -> dict:
         "username": d.username, "display_name": d.display_name, "role": d.role,
         "can_create": d.can_create, "can_export": d.can_export, "can_delete": d.can_delete, "is_admin": d.is_admin,
         "can_chon_bs": bool(d.can_chon_bs),
+        "can_gpb": bool(getattr(d, "can_gpb", False)),
     }
 
 
@@ -724,7 +737,7 @@ def create_doctor(payload: DoctorCreateIn, session: Session = Depends(get_sessio
         username=payload.username, display_name=payload.display_name,
         hashed_password=hash_password(payload.password), role=payload.role,
         can_create=payload.can_create, can_export=payload.can_export, can_delete=payload.can_delete, is_admin=payload.is_admin,
-        can_chon_bs=payload.can_chon_bs,
+        can_chon_bs=payload.can_chon_bs, can_gpb=payload.can_gpb,
     )
     session.add(d)
     session.commit()
@@ -738,7 +751,7 @@ def update_doctor_permissions(username: str, payload: DoctorPermissionsIn, sessi
         raise HTTPException(status_code=404, detail="Không tìm thấy tài khoản")
     if username == admin.username and payload.is_admin is False:
         raise HTTPException(status_code=400, detail="Không thể tự bỏ quyền admin của chính mình")
-    for field in ["display_name", "role", "can_create", "can_export", "can_delete", "is_admin", "can_chon_bs"]:
+    for field in ["display_name", "role", "can_create", "can_export", "can_delete", "is_admin", "can_chon_bs", "can_gpb"]:
         value = getattr(payload, field)
         if value is not None:
             setattr(d, field, value)
@@ -770,6 +783,51 @@ def delete_doctor(username: str, session: Session = Depends(get_session), admin:
     session.delete(d)
     session.commit()
     return {"ok": True}
+
+
+@app.post("/admin/tinh-lai-trang-thai")
+def tinh_lai_trang_thai(session: Session = Depends(get_session), admin: Doctor = Depends(require_admin)):
+    """Tính lại cột "đã điền đủ" cho TOÀN BỘ hồ sơ đã có.
+
+    Vì sao cần: cột da_dien_du_lieu chỉ được tính lại lúc bấm lưu. Khi đổi quy tắc "mục nào
+    phải điền đủ mọi ô" (08/10/2026 thêm "Bệnh sử - Tiền sử" và "Lâm sàng"), hồ sơ cũ vẫn giữ
+    dấu xanh trong danh sách trong khi mở ra lại thấy còn thiếu — hai chỗ nói hai điều khác nhau.
+    Chạy một lần sau khi cập nhật là khớp lại.
+
+    Tính lại luôn cả cột trạng thái giải phẫu bệnh: hồ sơ cũ đã chỉ định sinh thiết nhưng chưa
+    có ngày/kết quả trước đây không được đánh dấu, nên màn hình của bác sĩ giải phẫu bệnh sẽ
+    không thấy cho tới khi ai đó mở ra bấm lưu. Chạy một lần là hiện đủ.
+
+    Chỉ sửa các cột TRÍCH SẴN, KHÔNG đụng vào nội dung bệnh án. Chạy theo lô để không
+    nạp cả bảng vào bộ nhớ (bài học của /export/raw ở quy mô 50.000 bệnh nhân)."""
+    LO = 500
+    ket_qua = {}
+    for cfg in BAO_CAO_BENH:
+        CaseModel, FUModel = cfg["case_model"], cfg["followup_model"]
+        doi = 0
+        for Model, cot, muc in ((CaseModel, "benh_an_moi", cfg["muc_moi"]),
+                                (FUModel, "data", cfg["muc_tk"])):
+            bo_qua = 0
+            while True:
+                rows = session.exec(select(Model).offset(bo_qua).limit(LO)).all()
+                if not rows:
+                    break
+                for r in rows:
+                    try:
+                        data = json.loads(getattr(r, cot) or "{}")
+                    except ValueError:
+                        continue
+                    moi_tt = all_sections_filled(data, muc)
+                    gpb_cu = (r.gpb_trang_thai, r.gpb_cho_tu)
+                    cap_nhat_cot_gpb(r, data)
+                    if bool(r.da_dien_du_lieu) != moi_tt or gpb_cu != (r.gpb_trang_thai, r.gpb_cho_tu):
+                        r.da_dien_du_lieu = moi_tt
+                        session.add(r)
+                        doi += 1
+                session.commit()
+                bo_qua += LO
+        ket_qua[cfg["label"]] = doi
+    return {"ok": True, "so_ban_ghi_doi": ket_qua, "tong": sum(ket_qua.values())}
 
 
 # ---------- mô tả, ảnh minh hoạ và đánh dấu "trường quan trọng" ----------
@@ -960,7 +1018,7 @@ def get_survey(ma_bn: str, benh: str = "", doctor: Doctor = Depends(get_current_
 
 
 @app.post("/patients")
-def upsert_patient(payload: PatientIn, session: Session = Depends(get_session), doctor: Doctor = Depends(get_current_doctor)):
+def upsert_patient(payload: PatientIn, session: Session = Depends(get_session), doctor: Doctor = Depends(require_sua_benh_an)):
     p = session.get(Patient, payload.ma_bn)
     if p:
         for k, v in payload.dict().items():
@@ -1095,7 +1153,7 @@ def get_aa_case(ma_bn: str, session: Session = Depends(get_session), doctor: Doc
 # ---------- điền / sửa dữ liệu (bác sĩ hoặc học viên) ----------
 @app.put("/cases/{ma_bn}/aa")
 def save_case_data(
-    ma_bn: str, payload: DataIn, session: Session = Depends(get_session), doctor: Doctor = Depends(get_current_doctor)
+    ma_bn: str, payload: DataIn, session: Session = Depends(get_session), doctor: Doctor = Depends(require_sua_benh_an)
 ):
     case = session.exec(select(AACase).where(AACase.ma_bn == ma_bn)).first()
     if not case:
@@ -1152,7 +1210,7 @@ def save_followup_data(
     followup_id: int,
     payload: DataIn,
     session: Session = Depends(get_session),
-    doctor: Doctor = Depends(get_current_doctor),
+    doctor: Doctor = Depends(require_sua_benh_an),
 ):
     fu = session.get(AAFollowUp, followup_id)
     if not fu:
@@ -1222,7 +1280,7 @@ def get_aga_case(ma_bn: str, session: Session = Depends(get_session), doctor: Do
 
 @app.put("/cases/{ma_bn}/aga")
 def save_aga_case_data(
-    ma_bn: str, payload: DataIn, session: Session = Depends(get_session), doctor: Doctor = Depends(get_current_doctor)
+    ma_bn: str, payload: DataIn, session: Session = Depends(get_session), doctor: Doctor = Depends(require_sua_benh_an)
 ):
     case = session.exec(select(AGACase).where(AGACase.ma_bn == ma_bn)).first()
     if not case:
@@ -1275,7 +1333,7 @@ def save_aga_followup_data(
     followup_id: int,
     payload: DataIn,
     session: Session = Depends(get_session),
-    doctor: Doctor = Depends(get_current_doctor),
+    doctor: Doctor = Depends(require_sua_benh_an),
 ):
     fu = session.get(AGAFollowUp, followup_id)
     if not fu:
@@ -1342,7 +1400,7 @@ def get_nonscar_case(ma_bn: str, session: Session = Depends(get_session), doctor
 
 @app.put("/cases/{ma_bn}/nonscar")
 def save_nonscar_case_data(
-    ma_bn: str, payload: DataIn, session: Session = Depends(get_session), doctor: Doctor = Depends(get_current_doctor)
+    ma_bn: str, payload: DataIn, session: Session = Depends(get_session), doctor: Doctor = Depends(require_sua_benh_an)
 ):
     case = session.exec(select(NonScarCase).where(NonScarCase.ma_bn == ma_bn)).first()
     if not case:
@@ -1395,7 +1453,7 @@ def save_nonscar_followup_data(
     followup_id: int,
     payload: DataIn,
     session: Session = Depends(get_session),
-    doctor: Doctor = Depends(get_current_doctor),
+    doctor: Doctor = Depends(require_sua_benh_an),
 ):
     fu = session.get(NonScarFollowUp, followup_id)
     if not fu:
@@ -1503,7 +1561,7 @@ def get_sa_case(ma_bn: str, session: Session = Depends(get_session), doctor: Doc
 
 @app.put("/cases/{ma_bn}/sa")
 def save_sa_case_data(
-    ma_bn: str, payload: DataIn, session: Session = Depends(get_session), doctor: Doctor = Depends(get_current_doctor)
+    ma_bn: str, payload: DataIn, session: Session = Depends(get_session), doctor: Doctor = Depends(require_sua_benh_an)
 ):
     case = session.exec(select(SACase).where(SACase.ma_bn == ma_bn)).first()
     if not case:
@@ -1557,7 +1615,7 @@ def save_sa_followup_data(
     followup_id: int,
     payload: DataIn,
     session: Session = Depends(get_session),
-    doctor: Doctor = Depends(get_current_doctor),
+    doctor: Doctor = Depends(require_sua_benh_an),
 ):
     fu = session.get(SAFollowUp, followup_id)
     if not fu:
@@ -1625,7 +1683,7 @@ def get_ttm_case(ma_bn: str, session: Session = Depends(get_session), doctor: Do
 
 @app.put("/cases/{ma_bn}/ttm")
 def save_ttm_case_data(
-    ma_bn: str, payload: DataIn, session: Session = Depends(get_session), doctor: Doctor = Depends(get_current_doctor)
+    ma_bn: str, payload: DataIn, session: Session = Depends(get_session), doctor: Doctor = Depends(require_sua_benh_an)
 ):
     case = session.exec(select(TTMCase).where(TTMCase.ma_bn == ma_bn)).first()
     if not case:
@@ -1679,7 +1737,7 @@ def save_ttm_followup_data(
     followup_id: int,
     payload: DataIn,
     session: Session = Depends(get_session),
-    doctor: Doctor = Depends(get_current_doctor),
+    doctor: Doctor = Depends(require_sua_benh_an),
 ):
     fu = session.get(TTMFollowUp, followup_id)
     if not fu:
@@ -1798,6 +1856,180 @@ def gpb_waitlist(session: Session = Depends(get_session), doctor: Doctor = Depen
     # xếp theo số ngày chờ giảm dần; thêm khoá phụ để thứ tự luôn ổn định giữa các lần gọi
     out.sort(key=lambda r: (-r["days"], r["ma_bn"] or "", r["followup_id"] or 0))
     return out
+
+
+# ---------- Màn hình riêng của bác sĩ GIẢI PHẪU BỆNH ----------
+# Vì sao tách riêng: bác sĩ giải phẫu bệnh không khám lâm sàng, chỉ cần (1) danh sách ca đã
+# sinh thiết, (2) xem bệnh án để đối chiếu, (3) nhập kết quả + ảnh tiêu bản. Cho vào màn bệnh án
+# chung thì dễ sửa nhầm ô lâm sàng, nên dựng tài khoản riêng + màn riêng, và các endpoint dưới
+# đây CHỈ ghi đúng 5 ô giải phẫu bệnh, không chạm vào bất kỳ ô nào khác.
+
+# Các ô do bác sĩ giải phẫu bệnh nhập. gpbCo/gpbNgayThucHien/gpbKetQua đã có từ trước;
+# gpbNhanXet và gpbAnh là mới (nhận xét riêng và ảnh tiêu bản).
+O_GPB = ("gpbCo", "gpbNgayThucHien", "gpbKetQua", "gpbNhanXet", "gpbAnh")
+
+
+def _thu_tu_tai_kham(session: Session, FUModel, case_ids):
+    """{followup_id: số thứ tự lần tái khám} — chỉ đọc id và ngày khám, không mở cột JSON."""
+    thu_tu = {}
+    for lo in _chia_lo(set(case_ids)):
+        gom = {}
+        for fid, cid, ngay in session.exec(
+            select(FUModel.id, FUModel.case_id, FUModel.ngay_kham).where(FUModel.case_id.in_(lo))
+        ).all():
+            gom.setdefault(cid, []).append((ngay is not None, ngay or date.min, fid or 0))
+        for ds in gom.values():
+            for i, (_, _, fid) in enumerate(sorted(ds)):
+                thu_tu[fid] = i + 1
+    return thu_tu
+
+
+def _tom_tat_gpb(data: dict) -> dict:
+    anh = data.get("gpbAnh")
+    return {
+        "ngay_thuc_hien": data.get("gpbNgayThucHien") or "",
+        "co_ket_qua": bool(str(data.get("gpbKetQua") or "").strip()),
+        "co_nhan_xet": bool(str(data.get("gpbNhanXet") or "").strip()),
+        "so_anh_gpb": len(anh) if isinstance(anh, list) else 0,
+    }
+
+
+@app.get("/gpb/danh-sach")
+def gpb_danh_sach(
+    trang_thai: str = "tat_ca", ma_bn: str = "", benh: str = "",
+    session: Session = Depends(get_session), bs: Doctor = Depends(require_gpb_permission),
+):
+    """Mọi ca ĐÃ CHỈ ĐỊNH SINH THIẾT của cả 5 bệnh (bệnh án mới lẫn lần tái khám).
+
+    Lọc bằng cột gpb_trang_thai (đã có chỉ mục) nên không phải mở JSON của toàn bộ bản ghi —
+    nhưng vẫn phải đọc JSON của đúng các ca có sinh thiết để biết đã có kết quả/ảnh hay chưa.
+    trang_thai: tat_ca | cho (chưa có kết quả) | co (đã có kết quả)."""
+    nhan_benh = chuan_hoa_nhan_benh(benh) if benh else ""
+    ma = (ma_bn or "").strip()
+    hom_nay = date.today()
+    out = []
+    for cfg in DISEASE_CONFIGS:
+        CaseModel, FUModel, label = cfg["case_model"], cfg["followup_model"], cfg["label"]
+        if nhan_benh and label != nhan_benh:
+            continue
+        dk_case = CaseModel.gpb_trang_thai.in_(("cho", "co", "chi_dinh"))
+        dk_fu = FUModel.gpb_trang_thai.in_(("cho", "co", "chi_dinh"))
+        if ma:
+            dk_case = dk_case & (CaseModel.ma_bn.in_((ma, ma.zfill(10), ma.lstrip("0"))))
+        cases = session.exec(select(CaseModel).where(dk_case)).all()
+        fus = session.exec(select(FUModel).where(dk_fu)).all()
+        cha = nap_benh_an(session, CaseModel, [f.case_id for f in fus])
+        if ma:
+            giu = {c.id for c in cha.values() if c.ma_bn in (ma, ma.zfill(10), ma.lstrip("0"))}
+            fus = [f for f in fus if f.case_id in giu]
+        bn = nap_benh_nhan(session, [c.ma_bn for c in cases] + [c.ma_bn for c in cha.values()])
+        thu_tu = _thu_tu_tai_kham(session, FUModel, [f.case_id for f in fus])
+
+        for ban_ghi, la_moi in [(c, True) for c in cases] + [(f, False) for f in fus]:
+            case = ban_ghi if la_moi else cha.get(ban_ghi.case_id)
+            if not case:
+                continue
+            try:
+                data = json.loads((ban_ghi.benh_an_moi if la_moi else ban_ghi.data) or "{}")
+            except ValueError:
+                data = {}
+            tt = _tom_tat_gpb(data)
+            xong = tt["co_ket_qua"]
+            if trang_thai == "cho" and xong:
+                continue
+            if trang_thai == "co" and not xong:
+                continue
+            p = bn.get(case.ma_bn)
+            so_ngay = None
+            if not xong and ban_ghi.gpb_cho_tu:
+                so_ngay = max(0, (hom_nay - ban_ghi.gpb_cho_tu).days)
+            out.append({
+                "benh": label, "ma_bn": case.ma_bn, "ho_ten": p.ho_ten if p else None,
+                "nam_sinh": p.nam_sinh if p else None, "gioi_tinh": p.gioi_tinh if p else None,
+                "ma_luu_tru": case.ma_luu_tru,
+                "loai": "Bệnh án mới" if la_moi else f"Tái khám {thu_tu.get(ban_ghi.id, 1)}",
+                "followup_id": None if la_moi else ban_ghi.id,
+                "ngay_kham": (case.ngay_tao if la_moi else ban_ghi.ngay_kham),
+                "so_ngay_cho": so_ngay, "da_xong": xong, **tt,
+            })
+    # chưa có kết quả lên trước, trong đó ca chờ lâu nhất lên đầu
+    out.sort(key=lambda r: (r["da_xong"], -(r["so_ngay_cho"] or 0), r["ma_bn"] or ""))
+    return out
+
+
+@app.get("/gpb/ho-so/{benh}/{ma_bn}")
+def gpb_ho_so(benh: str, ma_bn: str, session: Session = Depends(get_session),
+              bs: Doctor = Depends(require_gpb_permission)):
+    """Toàn bộ bệnh án để bác sĩ giải phẫu bệnh đối chiếu — CHỈ ĐỌC.
+    Dùng chung đúng dữ liệu của màn bệnh án thường (kể cả ảnh lâm sàng, ảnh dermoscopy)."""
+    cfg = _find_disease_config(benh)
+    CaseModel, FUModel = cfg["case_model"], cfg["followup_model"]
+    case = session.exec(select(CaseModel).where(CaseModel.ma_bn == ma_bn)).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Không tìm thấy bệnh án")
+    p = session.get(Patient, case.ma_bn)
+    fus = session.exec(select(FUModel).where(FUModel.case_id == case.id).order_by(FUModel.ngay_kham)).all()
+    return {
+        "benh": cfg["label"], "ma_luu_tru": case.ma_luu_tru, "ma_bn": case.ma_bn,
+        "benh_nhan": {"ho_ten": p.ho_ten if p else None, "nam_sinh": p.nam_sinh if p else None,
+                      "gioi_tinh": p.gioi_tinh if p else None, "ngay_sinh": p.ngay_sinh if p else None},
+        "bac_si_tao": case.bac_si_tao,
+        "benh_an_moi": gan_dong_mac(refresh_images(json.loads(case.benh_an_moi)), case),
+        "tai_khams": [
+            {"id": f.id, "ngay_kham": f.ngay_kham, "bac_si_tao": f.bac_si_tao,
+             **gan_dong_mac(refresh_images(json.loads(f.data)), case)}
+            for f in fus
+        ],
+    }
+
+
+class KetQuaGPBIn(BaseModel):
+    gpbNgayThucHien: Optional[str] = None
+    gpbKetQua: Optional[str] = None
+    gpbNhanXet: Optional[str] = None
+    gpbAnh: Optional[List[str]] = None
+
+
+@app.put("/gpb/ket-qua/{benh}/{ma_bn}")
+def gpb_luu_ket_qua(
+    benh: str, ma_bn: str, payload: KetQuaGPBIn, followup_id: Optional[int] = None,
+    session: Session = Depends(get_session), bs: Doctor = Depends(require_gpb_permission),
+):
+    """Ghi kết quả giải phẫu bệnh. CHỈ đụng vào các ô trong O_GPB — mọi ô lâm sàng khác
+    giữ nguyên tuyệt đối, kể cả khi bác sĩ lâm sàng đang sửa hồ sơ ở màn khác."""
+    cfg = _find_disease_config(benh)
+    CaseModel, FUModel = cfg["case_model"], cfg["followup_model"]
+    case = session.exec(select(CaseModel).where(CaseModel.ma_bn == ma_bn)).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Không tìm thấy bệnh án")
+    muc_moi, muc_tk = _MUC_THEO_BENH[cfg["key"]]
+    if followup_id is None:
+        ban_ghi, cot, muc = case, "benh_an_moi", muc_moi
+    else:
+        ban_ghi = session.get(FUModel, followup_id)
+        if not ban_ghi or ban_ghi.case_id != case.id:
+            raise HTTPException(status_code=404, detail="Không tìm thấy lần tái khám của bệnh án này")
+        cot, muc = "data", muc_tk
+    try:
+        data = json.loads(getattr(ban_ghi, cot) or "{}")
+    except ValueError:
+        data = {}
+    moi = payload.dict(exclude_unset=True)
+    for k, v in moi.items():
+        if k in O_GPB:
+            data[k] = v
+    if any(str(data.get(k) or "").strip() for k in ("gpbKetQua", "gpbNhanXet", "gpbNgayThucHien"))             or (isinstance(data.get("gpbAnh"), list) and data["gpbAnh"]):
+        data["gpbCo"] = "Có"          # đã có kết quả thì chắc chắn là có làm giải phẫu bệnh
+    data["gpbBacSi"] = bs.display_name
+    data["gpbCapNhatLuc"] = datetime.utcnow().isoformat(timespec="seconds")
+    setattr(ban_ghi, cot, json.dumps(data, ensure_ascii=False))
+    ban_ghi.da_dien_du_lieu = all_sections_filled(data, muc)
+    cap_nhat_cot_gpb(ban_ghi, data)
+    if hasattr(ban_ghi, "updated_at"):
+        ban_ghi.updated_at = datetime.utcnow()
+    session.add(ban_ghi)
+    session.commit()
+    return {"ok": True, "gpb": _tom_tat_gpb(data), "gpbBacSi": data["gpbBacSi"]}
 
 
 def get_json_path(json_str: str, path: str):

@@ -100,6 +100,32 @@ def require_delete_permission(doctor: Doctor = Depends(get_current_doctor)) -> D
     return doctor
 
 
+def require_sua_benh_an(doctor: Doctor = Depends(get_current_doctor)) -> Doctor:
+    """Chặn tài khoản GIẢI PHẪU BỆNH sửa nội dung lâm sàng.
+
+    Bác sĩ giải phẫu bệnh được xem toàn bộ bệnh án để đối chiếu, nhưng chỉ ghi được 5 ô
+    giải phẫu bệnh qua màn hình riêng. Nếu không chặn ở đây thì tài khoản đó vẫn vào màn
+    bệnh án thường và sửa được mọi ô lâm sàng — đúng điều cần tránh.
+    Ai vừa khám lâm sàng vừa đọc giải phẫu bệnh thì dùng 2 tài khoản riêng."""
+    if getattr(doctor, "can_gpb", False) and not doctor.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Tài khoản giải phẫu bệnh chỉ nhập được kết quả ở màn “Giải phẫu bệnh”, "
+                   "không sửa được nội dung lâm sàng",
+        )
+    return doctor
+
+
+def require_gpb_permission(doctor: Doctor = Depends(get_current_doctor)) -> Doctor:
+    """Màn hình giải phẫu bệnh. Admin luôn vào được để còn kiểm tra giúp bác sĩ GPB."""
+    if not (getattr(doctor, "can_gpb", False) or doctor.is_admin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Tài khoản này không phải tài khoản giải phẫu bệnh",
+        )
+    return doctor
+
+
 def require_admin(doctor: Doctor = Depends(get_current_doctor)) -> Doctor:
     if not doctor.is_admin:
         raise HTTPException(

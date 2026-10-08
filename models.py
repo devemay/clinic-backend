@@ -30,6 +30,9 @@ class Doctor(SQLModel, table=True):
     # Được chọn thêm bác sĩ khám kèm ở ô "Bác sĩ khám" (VD tài khoản bác sĩ nội trú khám cùng thầy).
     # Tài khoản không bật cờ này thì ô "Bác sĩ khám" tự điền đúng tên của chính tài khoản đó.
     can_chon_bs: bool = Field(default=False)
+    # Tài khoản của bác sĩ giải phẫu bệnh: chỉ vào được màn "Giải phẫu bệnh",
+    # xem bệnh án ở chế độ CHỈ ĐỌC và nhập kết quả + ảnh GPB.
+    can_gpb: bool = Field(default=False)
     # Mọi tài khoản đăng nhập được đều mặc định điền/sửa được dữ liệu trong hồ sơ đã có — không cần cờ riêng
 
 

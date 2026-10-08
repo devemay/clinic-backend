@@ -35,7 +35,7 @@ NEW_COLUMNS = {
     # can_delete CỐ Ý không đặt DEFAULT: tài khoản cũ nhận NULL để backfill_quyen_xoa() nhận ra
     # "chưa nạp" và gán bằng can_export. Nếu đặt DEFAULT 0 thì mọi tài khoản cũ mất quyền xoá.
     "doctor": [("is_admin", "BOOLEAN DEFAULT 0"), ("can_delete", "BOOLEAN"),
-               ("can_chon_bs", "BOOLEAN DEFAULT 0")],
+               ("can_chon_bs", "BOOLEAN DEFAULT 0"), ("can_gpb", "BOOLEAN DEFAULT 0")],
     "patient": [("dan_toc", "VARCHAR(64)"), ("ngay_sinh", "DATE")],
     # Cột trích sẵn từ JSON, thêm sau khi hệ thống đã có dữ liệu thật.
     # Để mặc định NULL (không đặt DEFAULT) để phân biệt "chưa nạp giá trị" với "đã nạp, giá trị rỗng"
