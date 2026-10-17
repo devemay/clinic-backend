@@ -4,6 +4,7 @@ import io
 import json
 import os
 import traceback
+import zipfile
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
@@ -19,7 +20,7 @@ from auth import authenticate_doctor, create_access_token, get_current_doctor, r
 from database import get_session, init_db
 from models import (AACase, AAFollowUp, AGACase, AGAFollowUp, NonScarCase, NonScarFollowUp,
                     SACase, SAFollowUp, TTMCase, TTMFollowUp, Doctor, Patient, CaiDat)
-from storage import get_storage, refresh_url, nhan_dang_anh, chuyen_webp
+from storage import get_storage, refresh_url, nhan_dang_anh, chuyen_webp, tai_noi_dung
 from starlette.concurrency import run_in_threadpool
 import survey
 import tram
@@ -33,6 +34,9 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    # Trình duyệt chỉ đọc được tên file tải về (Content-Disposition) khi máy chủ cho phép rõ ràng,
+    # vì giao diện (GitHub Pages) và máy chủ nằm ở hai tên miền khác nhau.
+    expose_headers=["Content-Disposition"],
 )
 
 # Nén dữ liệu trả về (gzip). Dữ liệu bệnh án là JSON tiếng Việt lặp nhiều tên trường
@@ -2301,6 +2305,271 @@ def serve_local_upload(filename: str):
     with open(path, "rb") as f:
         loai = nhan_dang_anh(f.read(12))[1]
     return FileResponse(path, media_type=loai)
+
+
+# =====================================================================
+# XUẤT DỮ LIỆU THÔ + TẢI ẢNH HÀNG LOẠT
+# =====================================================================
+# Hai việc phục vụ làm nghiên cứu, đều chỉ dành cho tài khoản có quyền xuất dữ liệu:
+#   1. Tải nguyên database theo ĐÚNG cấu trúc bảng (mỗi bảng 1 file CSV + lược đồ CREATE TABLE)
+#   2. Tải ảnh theo mã hồ sơ — từng ca, hoặc hàng loạt theo kết quả tra cứu
+#
+# Cả hai đều dựng file zip theo kiểu TRUYỀN DẦN: ghi tới đâu gửi tới đó, không dựng cả file
+# trong bộ nhớ. Máy chủ Render chỉ có 512MB, mà gói ảnh của vài trăm ca có thể lên hàng trăm MB.
+
+GIOI_HAN_CA_TAI_ANH = 200   # số bệnh án tối đa cho 1 lần tải ảnh hàng loạt
+_COT_KHONG_XUAT = {"doctor": {"hashed_password"}}   # không bao giờ xuất mã băm mật khẩu
+
+
+class _DongZip:
+    """Đệm ghi cho zipfile: giữ phần vừa ghi rồi nhả ra cho StreamingResponse, sau đó xoá.
+    Có tell() nhưng KHÔNG có seek() — đó là cách zipfile nhận ra luồng không tua lại được và
+    tự chuyển sang ghi kiểu data descriptor."""
+
+    def __init__(self):
+        self._dem = 0
+        self._buf = bytearray()
+
+    def write(self, b):
+        self._dem += len(b)
+        self._buf += b
+        return len(b)
+
+    def flush(self):
+        pass
+
+    def tell(self):
+        return self._dem
+
+    def lay(self) -> bytes:
+        r = bytes(self._buf)
+        self._buf.clear()
+        return r
+
+
+def _dong_csv(gia_tri) -> bytes:
+    o = io.StringIO()
+    csv.writer(o, lineterminator="\n").writerow(["" if v is None else v for v in gia_tri])
+    return o.getvalue().encode("utf-8")
+
+
+def _lenh_tao_bang(session: Session, ten: str) -> str:
+    from sqlalchemy import text as _text
+    try:
+        if config.USE_MYSQL:
+            r = session.execute(_text(f"SHOW CREATE TABLE `{ten}`")).first()
+            return (r[1] + ";") if r else f"-- không đọc được lược đồ bảng {ten}"
+        r = session.execute(_text("SELECT sql FROM sqlite_master WHERE type='table' AND name=:t"),
+                            {"t": ten}).first()
+        return (r[0] + ";") if r and r[0] else f"-- không đọc được lược đồ bảng {ten}"
+    except Exception as e:
+        return f"-- lỗi khi đọc lược đồ bảng {ten}: {e}"
+
+
+_DOC_TRUOC_DB = """BỘ DỮ LIỆU THÔ — XUẤT TỪ PHẦN MỀM BỆNH ÁN NGHIÊN CỨU RỤNG TÓC
+
+Mỗi bảng trong database là một file .csv, tên cột giữ NGUYÊN như trong database.
+File luoc_do_bang.sql chứa lệnh CREATE TABLE của từng bảng (đúng kiểu dữ liệu đang dùng).
+
+CẦN BIẾT TRƯỚC KHI PHÂN TÍCH
+1. Nội dung phiếu khám KHÔNG nằm ở các cột rời. Nó nằm trong MỘT cột kiểu JSON:
+     - bảng <benh>case     : cột benh_an_moi   (bệnh án ban đầu)
+     - bảng <benh>followup : cột data          (mỗi lần tái khám)
+   Mở bằng Excel sẽ thấy cả cụm JSON trong một ô. Muốn tách thành cột thì dùng
+   Python (json.loads), R (jsonlite), hoặc Power Query.
+2. Năm bệnh nằm ở năm cặp bảng, cấu trúc giống hệt nhau:
+     aacase/aafollowup        rụng tóc mảng
+     agacase/agafollowup      rụng tóc Androgen
+     nonscarcase/...          rụng tóc không sẹo
+     sacase/safollowup        rụng tóc có sẹo
+     ttmcase/ttmfollowup      tật nhổ tóc
+   Nối tái khám về bệnh án qua cột case_id; nối bệnh án về bệnh nhân qua ma_bn.
+3. Ảnh KHÔNG nằm trong database. Trong JSON chỉ có đường dẫn (mảng "anh" và "gpbAnh"),
+   và các đường dẫn đó có hạn dùng. Muốn lấy ảnh: dùng nút tải ảnh trong phần mềm.
+4. Bảng doctor đã bỏ cột mật khẩu.
+5. File này có dữ liệu định danh bệnh nhân (họ tên, địa chỉ, điện thoại trong bảng patient).
+   Giữ như hồ sơ bệnh án: không gửi qua Zalo/email, không để trên máy dùng chung.
+"""
+
+
+def _goi_database_zip(session: Session):
+    from sqlalchemy import inspect as _inspect, text as _text
+    insp = _inspect(session.get_bind())
+    cac_bang = sorted(insp.get_table_names())
+
+    buf = _DongZip()
+    z = zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED, allowZip64=True)
+
+    z.writestr("DOC_TRUOC.txt", _DOC_TRUOC_DB, zipfile.ZIP_DEFLATED)
+    yield buf.lay()
+
+    luoc_do = [f"-- Lược đồ {len(cac_bang)} bảng, xuất lúc {datetime.now().isoformat(timespec='seconds')}",
+               f"-- Hệ quản trị: {'MySQL' if config.USE_MYSQL else 'SQLite'}", ""]
+    for ten in cac_bang:
+        luoc_do.append(_lenh_tao_bang(session, ten))
+    z.writestr("luoc_do_bang.sql", "\n\n".join(luoc_do) + "\n", zipfile.ZIP_DEFLATED)
+    yield buf.lay()
+
+    for ten in cac_bang:
+        cot = [c["name"] for c in insp.get_columns(ten)
+               if c["name"] not in _COT_KHONG_XUAT.get(ten, ())]
+        if not cot:
+            continue
+        with z.open(f"{ten}.csv", "w") as f:
+            f.write("﻿".encode("utf-8"))          # BOM: Excel mở đúng tiếng Việt
+            f.write(_dong_csv(cot))
+            yield buf.lay()
+            cau = "SELECT " + ", ".join(f"`{c}`" for c in cot) + f" FROM `{ten}`"
+            for lo in session.execute(_text(cau)).partitions(500):
+                f.write(b"".join(_dong_csv(list(hang)) for hang in lo))
+                phan = buf.lay()
+                if phan:
+                    yield phan
+        yield buf.lay()
+
+    z.close()
+    yield buf.lay()
+
+
+@app.get("/export/database.zip")
+def export_database_zip(session: Session = Depends(get_session),
+                        doctor: Doctor = Depends(require_export_permission)):
+    """Tải nguyên database dạng thô: mỗi bảng 1 file CSV đúng tên cột + lược đồ CREATE TABLE."""
+    ten_tep = f"du_lieu_tho_{date.today().isoformat()}.zip"
+    return StreamingResponse(
+        _goi_database_zip(session), media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{ten_tep}"',
+                 "Content-Encoding": "identity"},
+    )
+
+
+# ---------- tải ảnh theo mã hồ sơ ----------
+def _anh_cua_benh_an(session: Session, cfg, case) -> list:
+    """Danh sách ảnh của 1 bệnh án (gồm cả các lần tái khám và ảnh giải phẫu bệnh).
+    Mỗi phần tử: (đường dẫn trong zip CHƯA có đuôi, url, dòng cho danh sách kèm theo)."""
+    ra = []
+
+    def them(d: dict, thu_muc: str, mo_ta: str, ngay):
+        for khoa, nhan in (("anh", "lâm sàng"), ("gpbAnh", "giải phẫu bệnh")):
+            ds = d.get(khoa)
+            if not isinstance(ds, list):
+                continue
+            for i, u in enumerate(ds):
+                if not u:
+                    continue
+                dau = "gpb_" if khoa == "gpbAnh" else ""
+                ten = f"{case.ma_luu_tru}/{thu_muc}/{dau}{i + 1:02d}"
+                ra.append((ten, u, [case.ma_luu_tru, case.ma_bn, cfg["label"], mo_ta, nhan,
+                                    str(ngay or ""), i + 1]))
+
+    bam = json.loads(case.benh_an_moi or "{}")
+    ngay_ba = bam.get("ngayKham") or case.ngay_tao
+    them(bam, f"benh-an_{ngay_ba}", "Bệnh án mới", ngay_ba)
+    tk = nap_tai_kham(session, cfg["followup_model"], [case.id]).get(case.id, [])
+    for j, f in enumerate(tk):
+        fd = json.loads(f.data or "{}")
+        ngay = f.ngay_kham or fd.get("ngayKham")
+        them(fd, f"tai-kham-{j + 1}_{ngay}", f"Tái khám {j + 1}", ngay)
+    return ra
+
+
+_DAU_DS_ANH = ["tep", "maLuuTru", "maBN", "benh", "lanKham", "loaiAnh", "ngayKham", "thuTuAnh"]
+
+
+def _goi_anh_zip(danh_sach: list):
+    """danh_sach: các phần tử (tên chưa đuôi, url, dòng mô tả) — do _anh_cua_benh_an dựng."""
+    buf = _DongZip()
+    z = zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED, allowZip64=True)
+    ds_csv = [_dong_csv(_DAU_DS_ANH)]
+    thieu = 0
+    for ten, url, dong in danh_sach:
+        got = tai_noi_dung(url)
+        if not got:
+            thieu += 1
+            continue
+        data, duoi = got
+        tep = f"{ten}.{duoi}"
+        z.writestr(tep, data, zipfile.ZIP_STORED)
+        ds_csv.append(_dong_csv([tep] + dong))
+        phan = buf.lay()
+        if phan:
+            yield phan
+    z.writestr("danh_sach_anh.csv", b"\xef\xbb\xbf" + b"".join(ds_csv), zipfile.ZIP_DEFLATED)
+    if thieu:
+        # Ghi ra file riêng chứ KHÔNG chèn vào danh_sach_anh.csv: thêm dòng lạ vào giữa bảng
+        # sẽ làm hỏng bước đọc file bằng Excel/pandas ở phía người dùng.
+        z.writestr("GHI_CHU.txt",
+                   f"{thieu} ảnh không tải được và không có trong gói này.\n"
+                   "Thường là ảnh đã bị xoá khỏi kho ảnh, hoặc được tải lên từ bản phần mềm cũ.\n"
+                   "Các ảnh còn lại vẫn đầy đủ và đúng.\n", zipfile.ZIP_DEFLATED)
+    z.close()
+    yield buf.lay()
+
+
+@app.get("/export/anh/{benh}/{ma_bn}.zip")
+def export_anh_mot_ca(benh: str, ma_bn: str, session: Session = Depends(get_session),
+                      doctor: Doctor = Depends(require_export_permission)):
+    """Tải toàn bộ ảnh của MỘT bệnh án (kể cả ảnh các lần tái khám và ảnh giải phẫu bệnh)."""
+    cfg = _find_disease_config(benh)
+    case = session.exec(select(cfg["case_model"]).where(cfg["case_model"].ma_bn == ma_bn)).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Không tìm thấy bệnh án")
+    ds = _anh_cua_benh_an(session, cfg, case)
+    if not ds:
+        raise HTTPException(status_code=404, detail="Bệnh án này chưa có ảnh nào")
+    return StreamingResponse(
+        _goi_anh_zip(ds), media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="anh_{case.ma_luu_tru}.zip"',
+                 "Content-Encoding": "identity"},
+    )
+
+
+class CaCanTaiAnh(BaseModel):
+    benh: str
+    maBN: str
+
+
+class YeuCauTaiAnh(BaseModel):
+    ds: List[CaCanTaiAnh]
+
+
+@app.post("/export/anh.zip")
+def export_anh_nhieu_ca(yc: YeuCauTaiAnh, session: Session = Depends(get_session),
+                        doctor: Doctor = Depends(require_export_permission)):
+    """Tải ảnh của NHIỀU bệnh án — danh sách do màn Tra cứu nâng cao gửi lên.
+    Nhận thẳng danh sách ca thay vì nhận lại bộ lọc, để ảnh tải về khớp đúng kết quả
+    người dùng đang nhìn thấy (màn tra cứu có nhiều bộ lọc hơn những gì gửi được qua URL)."""
+    # bỏ trùng: 1 bệnh án xuất hiện nhiều dòng trong kết quả tra cứu (bệnh án + các lần tái khám)
+    khoa = []
+    for c in yc.ds:
+        k = (chuan_hoa_nhan_benh(c.benh), c.maBN)
+        if k[0] and k not in khoa:
+            khoa.append(k)
+    if not khoa:
+        raise HTTPException(status_code=400, detail="Danh sách bệnh án trống")
+    if len(khoa) > GIOI_HAN_CA_TAI_ANH:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"Đang chọn {len(khoa)} bệnh án, vượt mức {GIOI_HAN_CA_TAI_ANH} ca cho một lần tải. "
+                    "Hãy thu hẹp khoảng ngày trong phần tra cứu rồi tải thành nhiều đợt — "
+                    "gói ảnh quá lớn dễ đứt giữa chừng."),
+        )
+    danh_sach = []
+    for nhan, ma_bn in khoa:
+        cfg = next((c for c in DISEASE_CONFIGS if c["label"] == nhan), None)
+        if not cfg:
+            continue
+        case = session.exec(select(cfg["case_model"]).where(cfg["case_model"].ma_bn == ma_bn)).first()
+        if case:
+            danh_sach.extend(_anh_cua_benh_an(session, cfg, case))
+    if not danh_sach:
+        raise HTTPException(status_code=404, detail="Không có ảnh nào trong các bệnh án đã chọn")
+    ten_tep = f"anh_{len(khoa)}ca_{date.today().isoformat()}.zip"
+    return StreamingResponse(
+        _goi_anh_zip(danh_sach), media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{ten_tep}"',
+                 "Content-Encoding": "identity"},
+    )
 
 
 

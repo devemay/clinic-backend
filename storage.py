@@ -146,6 +146,39 @@ def _s3_url_pattern():
     return _S3_URL_RE
 
 
+def tai_noi_dung(url: Optional[str]) -> Optional[tuple]:
+    """Lấy NỘI DUNG ảnh về dạng bytes, để đóng gói tải hàng loạt. Trả (data, đuôi file) hoặc None.
+
+    Khác refresh_url (chỉ cấp lại đường dẫn cho trình duyệt tự tải): ở đây máy chủ tự đọc ảnh
+    từ S3 bằng khoá của chính nó, nên không phụ thuộc đường dẫn cũ còn hạn hay không, và cũng
+    không vướng CORS như khi để trình duyệt tự tải rồi nén.
+    Mọi lỗi (ảnh đã bị xoá trên S3, đường dẫn lạ…) đều trả None — gói ảnh thiếu 1 tấm vẫn hơn
+    là hỏng cả lần tải."""
+    if not url:
+        return None
+    try:
+        if config.USE_S3:
+            pattern = _s3_url_pattern()
+            m = pattern.match(url) if pattern else None
+            if m:
+                key = unquote(m.group(1))
+                s3 = S3Storage()
+                data = s3.client.get_object(Bucket=s3.bucket, Key=key)["Body"].read()
+                return data, nhan_dang_anh(data)[0]
+        # ảnh lưu cục bộ lúc chạy thử: /uploads/<tên file>
+        if "/uploads/" in url:
+            ten = url.split("/uploads/", 1)[1].split("?", 1)[0]
+            ten = os.path.basename(unquote(ten))
+            path = os.path.join(LOCAL_UPLOAD_DIR, ten)
+            if os.path.exists(path):
+                with open(path, "rb") as f:
+                    data = f.read()
+                return data, nhan_dang_anh(data)[0]
+    except Exception:
+        return None
+    return None
+
+
 def refresh_url(url: Optional[str]) -> Optional[str]:
     """Nếu url là 1 object trong bucket S3 riêng tư của hệ thống, cấp lại URL có chữ ký mới
     (URL cũ có thể đã hết hạn sau 7 ngày). Nếu không phải (ảnh local, hoặc chuỗi khác), giữ nguyên."""
